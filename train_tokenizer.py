@@ -50,9 +50,15 @@ def download_and_prepare_text(
     input_files: Optional[List[str]] = None,
     max_samples: Optional[int] = None,
     text_column: str = "text",
+    text_columns: Optional[List[str]] = None,
 ) -> str:
     """
     HuggingFace 데이터셋 또는 로컬 파일에서 텍스트 준비
+
+    Args:
+        text_column: 단일 텍스트 컬럼 (기본: "text")
+        text_columns: 여러 텍스트 컬럼 (예: ["instruction", "output"])
+                     지정 시 text_column 무시하고 모든 컬럼 결합
 
     Returns:
         임시 텍스트 파일 경로
@@ -85,7 +91,18 @@ def download_and_prepare_text(
                 break
 
             # 텍스트 추출
-            text = item.get(text_column, "")
+            if text_columns:
+                # 여러 컬럼 결합 (instruction-output 등)
+                text_parts = []
+                for col in text_columns:
+                    col_text = item.get(col, "")
+                    if col_text:
+                        text_parts.append(str(col_text))
+                text = " ".join(text_parts)
+            else:
+                # 단일 컬럼
+                text = item.get(text_column, "")
+
             if text and len(text.strip()) > 50:
                 temp_file.write(text)
                 temp_file.write('\n')
@@ -310,6 +327,13 @@ def main():
         help="Text column name (default: text)"
     )
     parser.add_argument(
+        "--text_columns",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Multiple text columns to combine (e.g., instruction output). Overrides --text_column"
+    )
+    parser.add_argument(
         "--max_samples",
         type=int,
         default=None,
@@ -360,6 +384,7 @@ def main():
         input_files=args.input_files,
         max_samples=args.max_samples,
         text_column=args.text_column,
+        text_columns=args.text_columns,
     )
 
     # 2. 토크나이저 학습
