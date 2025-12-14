@@ -1,0 +1,27 @@
+[
+  {
+    "instruction": "Python으로 'Hello, World!'를 출력하는 프로그램을 작성하세요.",
+    "input": "",
+    "output": "```python\nprint('Hello, World!')\n```\n\n이 한 줄의 코드가 화면에 'Hello, World!'를 출력합니다."
+  },
+  {
+    "instruction": "다음 문장을 한국어로 번역하세요.",
+    "input": "Machine learning is a subset of artificial intelligence.",
+    "output": "머신러닝은 인공지능의 하위 분야입니다."
+  },
+  {
+    "instruction": "프랑스의 수도는 어디인가요?",
+    "input": "",
+    "output": "프랑스의 수도는 파리(Paris)입니다."
+  },
+  {
+    "instruction": "다음 숫자 시퀀스의 다음 숫자는 무엇인가요?",
+    "input": "2, 4, 8, 16, 32, ?",
+    "output": "64입니다. 이 시퀀스는 각 숫자가 이전 숫자의 2배가 되는 등비수열입니다."
+  },
+  {
+    "instruction": "리스트에서 중복을 제거하는 Python 함수를 작성하세요.",
+    "input": "",
+    "output": "```python\ndef remove_duplicates(lst):\n    return list(set(lst))\n\n# 또는 순서를 유지하려면\ndef remove_duplicates_keep_order(lst):\n    seen = set()\n    result = []\n    for item in lst:\n        if item not in seen:\n            seen.add(item)\n            result.append(item)\n    return result\n```"
+  }
+]

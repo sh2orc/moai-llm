@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moai-llm"
+version = "0.1.0"
+description = "A 3B parameter LLM based on Qwen3 architecture with state-of-the-art components"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "MOAI Team"}
+]
+keywords = ["llm", "transformer", "qwen3", "pytorch", "deep-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.5.0",
+    "transformers>=4.45.0",
+    "sentencepiece>=0.2.0",
+    "datasets>=3.0.0",
+    "accelerate>=0.34.0",
+    "safetensors>=0.4.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66.0",
+    "numpy>=1.24.0",
+    "einops>=0.8.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "deepspeed>=0.15.0",
+    "wandb>=0.18.0",
+    "tensorboard>=2.14.0",
+]
+flash = [
+    "flash-attn>=2.7.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.7.0",
+    "isort>=5.12.0",
+    "mypy>=1.5.0",
+    "jupyter>=1.0.0",
+]
+all = [
+    "moai-llm[train,flash,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/moai-llm"
+Repository = "https://github.com/yourusername/moai-llm"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["moai_llm*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
