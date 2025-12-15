@@ -84,9 +84,9 @@ def load_pretrain_dataset(
         logger.info(f"  From HuggingFace: {dataset_name}")
         if dataset_config:
             logger.info(f"  Config: {dataset_config}")
-            dataset = load_dataset(dataset_name, dataset_config)
+            dataset = load_dataset(dataset_name, dataset_config, trust_remote_code=True)
         else:
-            dataset = load_dataset(dataset_name)
+            dataset = load_dataset(dataset_name, trust_remote_code=True)
     else:
         raise ValueError("Either dataset_name or train_file must be provided")
 
@@ -154,7 +154,7 @@ def load_sft_dataset(
     elif dataset_name:
         # HuggingFace 데이터셋 (자동 변환)
         logger.info(f"  From HuggingFace: {dataset_name}")
-        raw_dataset = load_dataset(dataset_name)
+        raw_dataset = load_dataset(dataset_name, trust_remote_code=True)
 
         # 포맷 변환
         formatted_data = []

@@ -81,9 +81,20 @@ def download_and_prepare_text(
 
         if dataset_config:
             logger.info(f"   Config: {dataset_config}")
-            dataset = load_dataset(dataset_name, dataset_config, split="train", streaming=True)
+            dataset = load_dataset(
+                dataset_name, 
+                dataset_config, 
+                split="train", 
+                streaming=True,
+                trust_remote_code=True
+            )
         else:
-            dataset = load_dataset(dataset_name, split="train", streaming=True)
+            dataset = load_dataset(
+                dataset_name, 
+                split="train", 
+                streaming=True,
+                trust_remote_code=True
+            )
 
         count = 0
         for item in dataset:
