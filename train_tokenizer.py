@@ -79,22 +79,36 @@ def download_and_prepare_text(
 
         from datasets import load_dataset
 
-        if dataset_config:
-            logger.info(f"   Config: {dataset_config}")
-            dataset = load_dataset(
-                dataset_name, 
-                dataset_config, 
-                split="train", 
-                streaming=True,
-                trust_remote_code=True
-            )
+        # wikipedia 데이터셋의 경우 Parquet 형식으로 직접 로드
+        if dataset_name == "wikipedia":
+            logger.info(f"   Using Parquet format for wikipedia dataset...")
+            if dataset_config:
+                logger.info(f"   Config: {dataset_config}")
+                # wikipedia 데이터셋은 Parquet 형식으로 제공됨
+                dataset = load_dataset(
+                    "wikipedia",
+                    dataset_config,
+                    split="train",
+                    streaming=True
+                )
+            else:
+                raise ValueError("wikipedia dataset requires --dataset_config (e.g., 20220301.ko)")
         else:
-            dataset = load_dataset(
-                dataset_name, 
-                split="train", 
-                streaming=True,
-                trust_remote_code=True
-            )
+            # 다른 데이터셋의 경우 일반적인 방법으로 로드
+            if dataset_config:
+                logger.info(f"   Config: {dataset_config}")
+                dataset = load_dataset(
+                    dataset_name, 
+                    dataset_config, 
+                    split="train", 
+                    streaming=True
+                )
+            else:
+                dataset = load_dataset(
+                    dataset_name, 
+                    split="train", 
+                    streaming=True
+                )
 
         count = 0
         for item in dataset:

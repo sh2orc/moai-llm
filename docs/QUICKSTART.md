@@ -359,6 +359,33 @@ python train.py \
     --output_dir outputs/pretrain  # 같은 디렉토리 지정
 ```
 
+### Wikipedia 데이터셋 에러 (Dataset scripts are no longer supported)
+
+최신 `datasets` 라이브러리에서 `wikipedia` 데이터셋 로드 시 에러가 발생할 수 있습니다. 코드가 자동으로 처리하지만, 문제가 계속되면:
+
+**해결 방법 1: 다른 데이터셋 사용 (권장)**
+```bash
+# mC4 한국어 데이터셋 사용
+python train_tokenizer.py \
+    --dataset allenai/c4 \
+    --dataset_config ko \
+    --vocab_size 128000 \
+    --output_dir tokenizers/ko
+```
+
+**해결 방법 2: 로컬 파일 사용**
+```bash
+python train_tokenizer.py \
+    --input_files data/*.txt \
+    --vocab_size 128000 \
+    --output_dir tokenizers/custom
+```
+
+**해결 방법 3: datasets 라이브러리 다운그레이드 (임시)**
+```bash
+pip install "datasets<4.0.0"
+```
+
 ---
 
 ## 🎉 지금 바로 시작!
