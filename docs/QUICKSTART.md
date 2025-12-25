@@ -21,8 +21,8 @@
 ```bash
 # Step 1: 토크나이저 (빠른 버전, 2분)
 python train_tokenizer.py \
-    --dataset wikipedia \
-    --dataset_config 20220301.ko \
+    --dataset wikimedia/wikipedia \
+    --dataset_config 20231101.ko \
     --vocab_size 32000 \
     --max_samples 10000 \
     --output_dir tokenizers/test
@@ -58,8 +58,8 @@ python chat.py --model_path outputs/test-sft/final_model
 ```bash
 # HuggingFace 데이터셋 사용 (권장)
 python train_tokenizer.py \
-    --dataset wikipedia \
-    --dataset_config 20220301.ko \
+    --dataset wikimedia/wikipedia \
+    --dataset_config 20231101.ko \
     --vocab_size 128000 \
     --output_dir tokenizers/ko-128k
 
@@ -76,8 +76,8 @@ python train_tokenizer.py \
 # 한국어 Wikipedia (기본)
 python train.py \
     --mode pretrain \
-    --dataset wikipedia \
-    --dataset_config 20220301.ko \
+    --dataset wikimedia/wikipedia \
+    --dataset_config 20231101.ko \
     --output_dir outputs/pretrain-ko \
     --bf16 \
     --gradient_checkpointing
@@ -145,8 +145,8 @@ model.push_to_hub('your-username/moai-llm-finance')
 
 | 데이터셋 | 크기 | 명령어 |
 |---------|------|--------|
-| Wikipedia (한국어) | 1GB | `--dataset wikipedia --dataset_config 20220301.ko` |
-| Wikipedia (영어) | 20GB | `--dataset wikipedia --dataset_config 20220301.en` |
+| Wikipedia (한국어) | 1GB | `--dataset wikimedia/wikipedia --dataset_config 20231101.ko` |
+| Wikipedia (영어) | 20GB | `--dataset wikimedia/wikipedia --dataset_config 20231101.en` |
 | C4 (영어) | 300GB | `--dataset allenai/c4 --dataset_config en` |
 
 ### 사전학습용
@@ -176,15 +176,15 @@ model.push_to_hub('your-username/moai-llm-finance')
 ```bash
 # 1. 토크나이저 (한국어)
 python train_tokenizer.py \
-    --dataset wikipedia \
-    --dataset_config 20220301.ko \
+    --dataset wikimedia/wikipedia \
+    --dataset_config 20231101.ko \
     --output_dir tokenizers/ko
 
 # 2. 사전학습 (한국어)
 python train.py \
     --mode pretrain \
-    --dataset wikipedia \
-    --dataset_config 20220301.ko \
+    --dataset wikimedia/wikipedia \
+    --dataset_config 20231101.ko \
     --output_dir outputs/pretrain-ko \
     --bf16
 
@@ -204,8 +204,8 @@ python chat.py --model_path outputs/sft-finance/final_model
 ```bash
 # 1. 토크나이저 (영어)
 python train_tokenizer.py \
-    --dataset wikipedia \
-    --dataset_config 20220301.en \
+    --dataset wikimedia/wikipedia \
+    --dataset_config 20231101.en \
     --output_dir tokenizers/en
 
 # 2. 사전학습 (C4)
@@ -267,21 +267,21 @@ python train.py \
 ### 토크나이저 옵션
 
 ```bash
---dataset wikipedia         # HuggingFace 데이터셋
---dataset_config 20220301.ko  # 데이터셋 설정
---input_files data/*.txt    # 로컬 파일
---vocab_size 128000         # 어휘 크기
---max_samples 10000         # 테스트용 샘플 제한
---base_tokenizer path/      # 기존 토크나이저 업데이트
+--dataset wikimedia/wikipedia   # HuggingFace 데이터셋
+--dataset_config 20231101.ko    # 데이터셋 설정
+--input_files data/*.txt        # 로컬 파일
+--vocab_size 128000             # 어휘 크기
+--max_samples 10000             # 테스트용 샘플 제한
+--base_tokenizer path/          # 기존 토크나이저 업데이트
 ```
 
 ### 사전학습 옵션
 
 ```bash
---mode pretrain             # 사전학습 모드
---dataset wikipedia         # 데이터셋
---dataset_config 20220301.ko  # 설정
---output_dir outputs/       # 출력 디렉토리
+--mode pretrain                 # 사전학습 모드
+--dataset wikimedia/wikipedia   # 데이터셋
+--dataset_config 20231101.ko    # 설정
+--output_dir outputs/           # 출력 디렉토리
 ```
 
 ### SFT 옵션
@@ -345,8 +345,25 @@ python train.py \
 
 ```bash
 # 데이터셋 정보 확인 도구
-python check_dataset.py wikipedia
+python check_dataset.py wikimedia/wikipedia
 python check_dataset.py allenai/c4
+```
+
+### Dataset scripts 에러
+
+```
+RuntimeError: Dataset scripts are no longer supported, but found wikipedia.py
+```
+
+최신 `datasets` 라이브러리(3.x)에서는 커스텀 스크립트 기반 데이터셋이 지원되지 않습니다. 
+기존 `wikipedia` 대신 `wikimedia/wikipedia` 데이터셋을 사용하세요:
+
+```bash
+# 기존 (지원 안됨)
+--dataset wikipedia --dataset_config 20220301.ko
+
+# 새로운 방식 (권장)
+--dataset wikimedia/wikipedia --dataset_config 20231101.ko
 ```
 
 ### 학습 재개
@@ -355,7 +372,7 @@ python check_dataset.py allenai/c4
 # 자동으로 마지막 체크포인트에서 재개됨
 python train.py \
     --mode pretrain \
-    --dataset wikipedia \
+    --dataset wikimedia/wikipedia \
     --output_dir outputs/pretrain  # 같은 디렉토리 지정
 ```
 
@@ -393,7 +410,7 @@ pip install "datasets<4.0.0"
 ### 첫 실행 (10분 테스트)
 
 ```bash
-python train_tokenizer.py --dataset wikipedia --dataset_config 20220301.ko --vocab_size 32000 --max_samples 10000 --output_dir tokenizers/test
+python train_tokenizer.py --dataset wikimedia/wikipedia --dataset_config 20231101.ko --vocab_size 32000 --max_samples 10000 --output_dir tokenizers/test
 
 python train.py --mode pretrain --dataset wikitext --dataset_config wikitext-2-raw-v1 --output_dir outputs/test --max_steps 100
 
@@ -407,9 +424,9 @@ python chat.py --model_path outputs/test/final_model
 cat USER_GUIDE.md
 
 # 실전 학습 시작
-python train_tokenizer.py --dataset wikipedia --dataset_config 20220301.ko --output_dir tokenizers/ko
+python train_tokenizer.py --dataset wikimedia/wikipedia --dataset_config 20231101.ko --output_dir tokenizers/ko
 
-python train.py --mode pretrain --dataset wikipedia --dataset_config 20220301.ko --output_dir outputs/pretrain --bf16 --gradient_checkpointing
+python train.py --mode pretrain --dataset wikimedia/wikipedia --dataset_config 20231101.ko --output_dir outputs/pretrain --bf16 --gradient_checkpointing
 ```
 
 ---

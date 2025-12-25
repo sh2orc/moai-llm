@@ -4,8 +4,8 @@
 사용법:
     # 새로 학습 (처음부터)
     python train_tokenizer.py \
-        --dataset wikipedia \
-        --dataset_config 20220301.ko \
+        --dataset wikimedia/wikipedia \
+        --dataset_config 20231101.ko \
         --vocab_size 128000 \
         --output_dir tokenizers/
 
