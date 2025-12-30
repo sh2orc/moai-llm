@@ -301,6 +301,34 @@ def _convert_to_text(item: dict) -> Optional[str]:
             text += f"<|im_start|>{role}\n{value}<|im_end|>\n"
         return text.strip()
     
+    # DeepSeek R1 스타일 (input/content/reasoning_content)
+    if "input" in item and "content" in item:
+        text = f"<|im_start|>user\n{item['input']}<|im_end|>\n"
+        # reasoning_content가 있으면 먼저 추가
+        if item.get("reasoning_content"):
+            text += f"<|im_start|>assistant\n<think>\n{item['reasoning_content']}\n</think>\n{item['content']}<|im_end|>"
+        else:
+            text += f"<|im_start|>assistant\n{item['content']}<|im_end|>"
+        return text
+    
+    # prompt/response 포맷
+    if "prompt" in item and "response" in item:
+        text = f"<|im_start|>user\n{item['prompt']}<|im_end|>\n"
+        text += f"<|im_start|>assistant\n{item['response']}<|im_end|>"
+        return text
+    
+    # question/answer 포맷
+    if "question" in item and "answer" in item:
+        text = f"<|im_start|>user\n{item['question']}<|im_end|>\n"
+        text += f"<|im_start|>assistant\n{item['answer']}<|im_end|>"
+        return text
+    
+    # prompt/completion 포맷
+    if "prompt" in item and "completion" in item:
+        text = f"<|im_start|>user\n{item['prompt']}<|im_end|>\n"
+        text += f"<|im_start|>assistant\n{item['completion']}<|im_end|>"
+        return text
+    
     # 알 수 없는 형식
     logger.warning(f"Unknown format, skipping: {list(item.keys())}")
     return None
