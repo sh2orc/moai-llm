@@ -80,6 +80,13 @@ export NCCL_P2P_DISABLE=1
 # Memory optimization
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# 추가 속도 최적화
+export OMP_NUM_THREADS=8
+export MKL_NUM_THREADS=8
+
+# TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)
+export NVIDIA_TF32_OVERRIDE=1
+
 # HuggingFace cache (optional)
 # export HF_HOME="/path/to/cache"
 # export HF_DATASETS_CACHE="/path/to/datasets/cache"
@@ -135,6 +142,9 @@ torchrun \
     --gradient_checkpointing \
     --packing \
     --sequential \
+    --flash_attention \
+    --num_proc 8 \
+    --dataloader_num_workers 4 \
     --logging_steps 10 \
     --save_steps 500 \
     --save_total_limit 3

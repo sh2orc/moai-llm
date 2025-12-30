@@ -435,6 +435,8 @@ def setup_model_and_tokenizer(
     tokenizer_path: str,
     model_config: Optional[str] = None,
     pretrained_model: Optional[str] = None,
+    use_flash_attention: bool = False,
+    use_compile: bool = False,
 ):
     """모델과 토크나이저 초기화"""
 
@@ -455,7 +457,26 @@ def setup_model_and_tokenizer(
             config = MoaiConfig.from_json_file(model_config)
         else:
             config = MoaiConfig()
+        
+        # Flash Attention 설정
+        if use_flash_attention:
+            try:
+                import flash_attn
+                config.use_flash_attention = True
+                logger.info("⚡ Flash Attention 2 enabled")
+            except ImportError:
+                logger.warning("⚠️ flash-attn not installed, using standard attention")
+        
         model = MoaiForCausalLM(config)
+    
+    # torch.compile 적용 (PyTorch 2.0+)
+    if use_compile:
+        try:
+            logger.info("🔧 Compiling model with torch.compile...")
+            model = torch.compile(model, mode="reduce-overhead")
+            logger.info("✓ Model compiled successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ torch.compile failed: {e}")
 
     # 파라미터 수 출력
     total_params = sum(p.numel() for p in model.parameters())
@@ -507,6 +528,8 @@ def train_sequential(args):
             tokenizer_path=args.tokenizer_path,
             model_config=args.model_config,
             pretrained_model=current_checkpoint,
+            use_flash_attention=args.flash_attention,
+            use_compile=args.compile,
         )
         
         # 2. 해당 데이터셋만 로드
@@ -621,9 +644,11 @@ def train_sequential(args):
             max_steps=args.max_steps if args.max_steps > 0 else -1,
             # 추가 최적화 옵션
             dataloader_pin_memory=True,
-            dataloader_prefetch_factor=2,
+            dataloader_prefetch_factor=4,
             optim="adamw_torch_fused" if args.bf16 or args.fp16 else "adamw_torch",
             ddp_find_unused_parameters=False,
+            tf32=True,
+            group_by_length=False,
         )
         
         trainer = Trainer(
@@ -685,6 +710,8 @@ def train(args):
         tokenizer_path=args.tokenizer_path,
         model_config=args.model_config,
         pretrained_model=args.pretrained_model,
+        use_flash_attention=args.flash_attention,
+        use_compile=args.compile,
     )
 
     # 2. 데이터셋 로드
@@ -794,10 +821,12 @@ def train(args):
         max_steps=args.max_steps if args.max_steps > 0 else -1,
         # 추가 최적화 옵션
         dataloader_pin_memory=True,  # GPU 전송 속도 향상
-        dataloader_prefetch_factor=2,  # 미리 배치 로드
+        dataloader_prefetch_factor=4,  # 미리 배치 로드 (증가)
         optim="adamw_torch_fused" if args.bf16 or args.fp16 else "adamw_torch",  # Fused optimizer
-        torch_compile=False,  # PyTorch 2.0 compile (실험적)
         ddp_find_unused_parameters=False,  # DDP 최적화
+        # 추가 속도 향상
+        tf32=True,  # TF32 사용 (Ampere GPU)
+        group_by_length=False,  # 길이별 그룹핑 비활성화 (packing 사용시)
     )
 
     # 6. Trainer
@@ -927,7 +956,25 @@ def main():
 
     # 기타
     parser.add_argument("--num_proc", type=int, default=4, help="Number of processes for tokenization")
-    parser.add_argument("--dataloader_num_workers", type=int, default=2)
+    parser.add_argument("--dataloader_num_workers", type=int, default=4)
+    
+    # 추가 최적화 옵션
+    parser.add_argument(
+        "--flash_attention",
+        action="store_true",
+        help="Use Flash Attention 2 for faster training (requires flash-attn package)"
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true", 
+        help="Use torch.compile for faster training (PyTorch 2.0+)"
+    )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Directory to cache processed datasets for faster subsequent runs"
+    )
 
     args = parser.parse_args()
 
