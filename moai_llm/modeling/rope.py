@@ -201,17 +201,18 @@ def apply_rotary_pos_emb(
     Args:
         q: Query tensor of shape (batch_size, num_heads, seq_len, head_dim)
         k: Key tensor of shape (batch_size, num_kv_heads, seq_len, head_dim)
-        cos: Cosine embeddings
-        sin: Sine embeddings
+        cos: Cosine embeddings of shape (seq_len, head_dim)
+        sin: Sine embeddings of shape (seq_len, head_dim)
         position_ids: Position indices (if None, assumes sequential positions)
         unsqueeze_dim: Dimension to unsqueeze for broadcasting
 
     Returns:
         Tuple of (rotated_q, rotated_k)
     """
-    # Expand cos/sin to match input dimensions
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
+    # cos/sin shape: (seq_len, head_dim) → (1, 1, seq_len, head_dim)
+    # to broadcast with q/k: (batch, num_heads, seq_len, head_dim)
+    cos = cos.unsqueeze(0).unsqueeze(0)
+    sin = sin.unsqueeze(0).unsqueeze(0)
 
     # Apply rotation using the formula:
     # q_embed = q * cos + rotate_half(q) * sin

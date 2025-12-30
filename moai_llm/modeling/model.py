@@ -186,6 +186,7 @@ class MoaiModel(MoaiPreTrainedModel):
                     attention_mask,
                     position_ids,
                     past_key_value,
+                    use_reentrant=False,
                 )
             else:
                 layer_outputs = decoder_layer(
