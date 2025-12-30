@@ -264,6 +264,32 @@ Effective Batch = BATCH_SIZE × NUM_GPUS × GRADIENT_ACCUMULATION_STEPS
 - Larger `GRADIENT_ACCUMULATION_STEPS` = more stable but slower updates
 - With Chunked Cross-Entropy, batch sizes of 16-20 are typically safe for 32GB GPUs
 
+### Learning Rate Guide
+
+**Recommended Learning Rates by Training Type**:
+
+| Training Type | Learning Rate | Notes |
+|--------------|---------------|-------|
+| **Pretrain (from scratch)** | **1e-4 ~ 3e-4** | Standard for new models |
+| Continued Pretrain | 5e-5 ~ 1e-4 | Lower than initial pretrain |
+| Fine-tuning (full) | 1e-5 ~ 5e-5 | Careful not to forget |
+| LoRA/QLoRA | 1e-4 ~ 2e-4 | Can be higher due to fewer params |
+| SFT | 2e-5 ~ 1e-4 | Depends on dataset size |
+
+**⚠️ Common Mistake**: Using `1e-6` for pretrain is **100x too low** - training will barely progress!
+
+**Learning Rate by Model Size**:
+
+| Model Size | Pretrain LR | Fine-tune LR |
+|------------|-------------|--------------|
+| 1-3B | 2e-4 ~ 3e-4 | 1e-5 ~ 5e-5 |
+| 7B | 1e-4 ~ 2e-4 | 5e-6 ~ 2e-5 |
+| 13B+ | 5e-5 ~ 1e-4 | 1e-6 ~ 1e-5 |
+
+**Warmup Steps**:
+- Typically 1-5% of total training steps
+- 2000 steps is a good default for most cases
+
 ### Loss Configuration
 
 ```yaml
