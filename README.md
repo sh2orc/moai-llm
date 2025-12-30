@@ -20,9 +20,11 @@ A state-of-the-art 3B parameter language model based on Qwen3 architecture, feat
 - **Gradient Checkpointing**: Reduced memory footprint
 
 ### Tokenizer
-- **SentencePiece BPE**: 128K vocabulary optimized for multilingual text
-- **CJK Optimization**: Special focus on Korean, Chinese, Japanese
-- **BPE-Dropout**: Regularization for robust tokenization
+- **HuggingFace Tokenizers (Rust)**: 10-50x faster than SentencePiece
+- **Multilingual Support**: ko/en/ja/zh (64K base → 122K extended)
+- **Domain Extended**: Finance vocabulary (BCCard, Alpaca-Korean)
+- **Speed Modes**: `--fast`, `--turbo`, `--ultrafast` for large-scale training
+- **Extensible**: Incrementally add domain-specific vocabulary
 
 ## Model Specifications
 
@@ -33,7 +35,7 @@ A state-of-the-art 3B parameter language model based on Qwen3 architecture, feat
 | Layers | 28 |
 | Attention Heads (Q) | 28 |
 | KV Heads | 4 |
-| Vocabulary Size | 128K |
+| Vocabulary Size | **122K** (multilingual + finance) |
 | Max Context Length | 8K → 128K+ (with YaRN) |
 | FFN Intermediate Size | 10240 |
 | Activation | SwiGLU |
@@ -69,9 +71,13 @@ pip install flash-attn --no-build-isolation
 **10-Minute Test** to verify everything works:
 
 ```bash
-# 1. Tokenizer (2 minutes)
-python train_tokenizer.py --dataset wikipedia --dataset_config 20220301.ko \
-    --vocab_size 32000 --max_samples 10000 --output_dir tokenizers/test
+# 1. Tokenizer (2 minutes) - Fast multilingual
+python train_tokenizer.py \
+    --multilingual ko en \
+    --vocab_size 32000 \
+    --max_samples_per_lang 5000 \
+    --turbo \
+    --output_dir tokenizers/test
 
 # 2. Pretrain (3 minutes, 100 steps)
 python train.py --mode pretrain --dataset wikitext --dataset_config wikitext-2-raw-v1 \
@@ -83,17 +89,78 @@ python train.py --mode sft --dataset BCCard/BCCard-Finance-Kor-QnA \
 
 # 4. Chat (instant)
 python chat.py --model_path outputs/test-sft/final_model
+
+# (Optional) Test tokenizer
+python test_tokenizer.py --tokenizer_path tokenizers/moai
+python test_tokenizer.py --compare  # Compare all tokenizers
 ```
 
-**Production Training**:
+**Production Training** (Using Pre-built Tokenizer):
 
 ```bash
-# Full workflow (tokenizer → pretrain → SFT)
-python train_tokenizer.py --dataset wikipedia --dataset_config 20220301.ko --output_dir tokenizers/ko
-python train.py --mode pretrain --dataset wikipedia --dataset_config 20220301.ko --output_dir outputs/pretrain --bf16
-python train.py --mode sft --dataset BCCard/BCCard-Finance-Kor-QnA --pretrained_model outputs/pretrain/final_model --output_dir outputs/sft
+# Tokenizer already built: tokenizers/moai (122K vocab)
+# - Base: multilingual 64K (ko/en/ja/zh)
+# - Extended: +alpaca-korean, +finance (BCCard)
+
+# Step 1: Test tokenizer
+python test_tokenizer.py --tokenizer_path tokenizers/moai
+
+# Step 2: Pretrain
+python train.py --mode pretrain \
+    --dataset wikimedia/wikipedia --dataset_config 20231101.ko \
+    --tokenizer_path tokenizers/moai \
+    --output_dir outputs/pretrain \
+    --bf16 --gradient_checkpointing
+
+# Step 3: SFT
+python train.py --mode sft \
+    --dataset BCCard/BCCard-Finance-Kor-QnA \
+    --pretrained_model outputs/pretrain/final_model \
+    --output_dir outputs/sft
+
+# Step 4: Chat
 python chat.py --model_path outputs/sft/final_model
 ```
+
+**Build Your Own Tokenizer** (Optional):
+
+```bash
+# Step 1: Multilingual base (64K)
+python train_tokenizer.py \
+    --multilingual ko en ja zh \
+    --vocab_size 64000 \
+    --max_samples_per_lang 150000 \
+    --turbo \
+    --output_dir tokenizers/ \
+    --model_prefix moai_multilingual
+
+# Step 2: Extend with domain data (+16K → 80K)
+python train_tokenizer.py \
+    --base_tokenizer tokenizers/moai_multilingual \
+    --dataset unoooo/alpaca-korean \
+    --vocab_size 80000 \
+    --turbo \
+    --output_dir tokenizers/ \
+    --model_prefix moai_alpaca
+
+# Step 3: Add finance vocab (+16K → 96K)
+python train_tokenizer.py \
+    --base_tokenizer tokenizers/moai_alpaca \
+    --dataset BCCard/BCCard-Finance-Kor-QnA \
+    --vocab_size 96000 \
+    --turbo \
+    --output_dir tokenizers/ \
+    --model_prefix moai_finance
+```
+
+### Tokenizer Speed Modes
+
+| Mode | Algorithm | Speed | Use Case |
+|------|-----------|-------|----------|
+| Default | BPE | 1x | Small datasets |
+| `--fast` | BPE optimized | 10x | Medium datasets |
+| `--turbo` | BPE aggressive | 20x | Large datasets (recommended) |
+| `--ultrafast` | Unigram | 50x | Maximum speed |
 
 **For detailed guides, see:**
 - `QUICKSTART.md` - Copy-paste ready commands
@@ -136,7 +203,7 @@ python chat.py --model_path outputs/sft/final_model
 
 ```json
 {
-  "vocab_size": 128000,
+  "vocab_size": 122100,
   "hidden_size": 3840,
   "num_hidden_layers": 28,
   "num_attention_heads": 28,
@@ -277,6 +344,7 @@ moai-llm/
 │   ├── data/                  # Data utilities
 │   └── tokenizer/             # Tokenizer utilities
 ├── train_tokenizer.py          # Tokenizer training script
+├── test_tokenizer.py           # Tokenizer testing & comparison
 ├── train.py                    # Unified training (pretrain + SFT)
 ├── chat.py                     # Interactive chat interface
 ├── test_inference.py           # Inference testing
@@ -317,6 +385,7 @@ moai-llm/
 - Hierarchical Packing: https://arxiv.org/abs/2503.07680
 
 ### Tokenization
+- HuggingFace Tokenizers: https://github.com/huggingface/tokenizers
 - SentencePiece: https://github.com/google/sentencepiece
 - BPE-Dropout: https://arxiv.org/abs/1910.13267
 
@@ -355,6 +424,3 @@ Contributions are welcome! Please see CONTRIBUTING.md for guidelines.
 For questions and feedback:
 - GitHub Issues: https://github.com/sh2orc/moai-llm/issues
 
----
-
-**Built with ❤️ for the open-source AI community**

@@ -1,5 +1,5 @@
 {
-  "vocab_size": 128000,
+  "vocab_size": 122100,
   "hidden_size": 3840,
   "intermediate_size": 10240,
   "num_hidden_layers": 28,
