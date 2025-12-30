@@ -22,7 +22,7 @@ NUM_GPUS=${NUM_GPUS:-4}
 case $CONFIG_SIZE in
     2b)
         MODEL_CONFIG="configs/model_config_2b.json"
-        BATCH_SIZE=32
+        BATCH_SIZE=16
         ;;
     5b)
         MODEL_CONFIG="configs/model_config.json"
@@ -36,7 +36,7 @@ esac
 
 # Common settings
 TOKENIZER_PATH="tokenizers/moai"
-GRADIENT_ACCUMULATION_STEPS=16
+GRADIENT_ACCUMULATION_STEPS=3
 MAX_SEQ_LENGTH=1024
 LEARNING_RATE=1e-6
 WARMUP_STEPS=2000
