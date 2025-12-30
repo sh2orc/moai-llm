@@ -323,13 +323,22 @@ Standard cross-entropy requires the full tensor in memory, causing OOM errors.
 loss = F.cross_entropy(logits.view(-1, vocab_size), labels.view(-1))
 
 # Chunked (memory-efficient) - used in MOAI-LLM
-loss = chunked_cross_entropy_loss(logits, labels, chunk_size=8192)
+loss = chunked_cross_entropy_loss(logits, labels, chunk_size=1024)
 ```
+
+**Chunk Size Selection**:
+
+| chunk_size | Memory per chunk (vocab=128k, bf16) | Use Case |
+|------------|-------------------------------------|----------|
+| 8192 | ~2 GB | Large GPU (80GB+) |
+| 4096 | ~1 GB | Medium GPU (48GB) |
+| 2048 | ~512 MB | Standard GPU (32GB) |
+| **1024** | **~256 MB** | **Recommended for 32GB GPUs** |
 
 **Benefits**:
 - **Mathematically identical** to standard cross-entropy (not an approximation)
-- **~4x less peak memory** during loss computation
-- **Enables 2-4x larger batch sizes** with same GPU memory
+- **~8-16x less peak memory** during loss computation with chunk_size=1024
+- **Enables larger batch sizes** with same GPU memory
 - Used by LLaMA-Factory, Unsloth, liger-kernel, and other production systems
 
 ### 2. Context Extension with YaRN
