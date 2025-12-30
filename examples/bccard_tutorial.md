@@ -85,12 +85,11 @@ python train.py \
     --mode pretrain \
     --dataset wikimedia/wikipedia \
     --dataset_config 20231101.ko \
-    --tokenizer_path tokenizers/moai_finance_bccard \
+    --tokenizer_path tokenizers/moai \
     --output_dir outputs/pretrain-korean \
-    --batch_size 4 \
+    --batch_size 16 \
     --gradient_accumulation_steps 8 \
-    --learning_rate 3e-4 \
-    --max_steps 10000 \
+    --learning_rate 1e-6 \
     --bf16 \
     --gradient_checkpointing
 ```
@@ -102,7 +101,7 @@ python train.py \
     --mode pretrain \
     --dataset wikimedia/wikipedia \
     --dataset_config 20231101.en \
-    --tokenizer_path tokenizers/moai_finance_bccard \
+    --tokenizer_path tokenizers/moai \
     --output_dir outputs/pretrain-en \
     --max_steps 50000
 
@@ -111,7 +110,7 @@ python train.py \
     --mode pretrain \
     --dataset wikimedia/wikipedia \
     --dataset_config 20231101.ko \
-    --tokenizer_path tokenizers/moai_finance_bccard \
+    --tokenizer_path tokenizers/moai \
     --pretrained_model outputs/pretrain-en/final_model \
     --output_dir outputs/pretrain-en-ko \
     --max_steps 20000

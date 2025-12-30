@@ -3,7 +3,7 @@ Configuration class for MOAI-LLM model.
 
 Based on Qwen2.5 architecture with aggressive optimization:
 - 28 layers, 3840 hidden size (~3B parameters)
-- Grouped Query Attention (28 Q heads, 4 KV heads)
+- Grouped Query Attention (30 Q heads, 5 KV heads, 6:1 ratio)
 - 128K vocabulary for multilingual support
 - RoPE theta=1M for long context support
 - QK-Norm for training stability
@@ -23,8 +23,8 @@ class MoaiConfig(PretrainedConfig):
         hidden_size (int): Dimension of hidden layers (default: 3840)
         intermediate_size (int): Dimension of FFN intermediate layer (default: 10240, ~2.67x for SwiGLU)
         num_hidden_layers (int): Number of transformer layers (default: 28)
-        num_attention_heads (int): Number of query attention heads (default: 28)
-        num_key_value_heads (int): Number of key/value attention heads for GQA (default: 4)
+        num_attention_heads (int): Number of query attention heads (default: 30)
+        num_key_value_heads (int): Number of key/value attention heads for GQA (default: 5)
         max_position_embeddings (int): Maximum sequence length (default: 32768, Qwen2.5 standard)
         rope_theta (float): Base frequency for RoPE (default: 1000000.0, Qwen2.5 for long context)
         rope_scaling (dict): Configuration for RoPE scaling (YaRN, NTK, etc.)
@@ -47,8 +47,8 @@ class MoaiConfig(PretrainedConfig):
         hidden_size: int = 3840,
         intermediate_size: int = 10240,
         num_hidden_layers: int = 28,
-        num_attention_heads: int = 28,
-        num_key_value_heads: int = 4,
+        num_attention_heads: int = 30,
+        num_key_value_heads: int = 5,
         max_position_embeddings: int = 32768,  # Qwen3: 40960, 우리는 32K로 시작
         rope_theta: float = 1000000.0,  # Qwen3 기본값
         rope_scaling: Optional[dict] = None,
@@ -144,7 +144,7 @@ class MoaiConfig3B(MoaiConfig):
     3B parameter configuration optimized for Qwen3 architecture.
 
     - Qwen3-style embeddings (rope_theta=1M, max_seq=32K)
-    - GQA with 7:1 ratio (28 Q heads, 4 KV heads)
+    - GQA with 6:1 ratio (30 Q heads, 5 KV heads)
     - QK-Norm for training stability
     - No bias in attention/MLP (modern LLM standard)
     """
@@ -154,8 +154,8 @@ class MoaiConfig3B(MoaiConfig):
             hidden_size=3840,
             intermediate_size=10240,
             num_hidden_layers=28,
-            num_attention_heads=28,
-            num_key_value_heads=4,
+            num_attention_heads=30,
+            num_key_value_heads=5,
             max_position_embeddings=32768,  # Qwen3 long context
             rope_theta=1000000.0,  # Qwen3 default
             **kwargs
