@@ -64,7 +64,6 @@ from datasets import load_dataset
 
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.model import MoaiForCausalLM
-from moai_llm.data import SequencePacker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
