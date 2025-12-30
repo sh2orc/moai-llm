@@ -43,11 +43,6 @@ class MoaiPreTrainedModel(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        """Enable/disable gradient checkpointing."""
-        if isinstance(module, MoaiModel):
-            module.gradient_checkpointing = value
-
 
 class MoaiModel(MoaiPreTrainedModel):
     """
@@ -331,6 +326,8 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,  # Ignored, for compatibility
+        **kwargs,  # Ignore any other unexpected arguments
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         """
         Forward pass for causal language modeling.
@@ -346,10 +343,12 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
             output_attentions: Whether to output attention weights
             output_hidden_states: Whether to output all hidden states
             return_dict: Whether to return ModelOutput
+            token_type_ids: Ignored (for BERT compatibility)
 
         Returns:
             CausalLMOutputWithPast with loss, logits, past_key_values, etc.
         """
+        # Note: token_type_ids is ignored as this is a decoder-only model
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
