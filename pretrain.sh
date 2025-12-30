@@ -22,11 +22,11 @@ NUM_GPUS=${NUM_GPUS:-4}
 case $CONFIG_SIZE in
     2b)
         MODEL_CONFIG="configs/model_config_2b.json"
-        BATCH_SIZE=16  # vocab_size=128000이라 logits가 크므로 배치 줄임
+        BATCH_SIZE=8  # 32GB GPU에서 2B 모델 + vocab=128k는 배치 8이 한계
         ;;
     5b)
         MODEL_CONFIG="configs/model_config.json"
-        BATCH_SIZE=4
+        BATCH_SIZE=2
         ;;
     *)
         echo "Unknown config size: $CONFIG_SIZE (use 2b or 5b)"
@@ -36,7 +36,7 @@ esac
 
 # Common settings
 TOKENIZER_PATH="tokenizers/moai"
-GRADIENT_ACCUMULATION_STEPS=6  # 배치 줄인만큼 증가 (effective batch = 4*4*12 = 192)
+GRADIENT_ACCUMULATION_STEPS=12  # 배치 줄인만큼 증가 (effective batch = 8*4*12 = 384)
 MAX_SEQ_LENGTH=1024
 LEARNING_RATE=1e-4
 WARMUP_STEPS=2000
