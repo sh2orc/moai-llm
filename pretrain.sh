@@ -40,7 +40,7 @@ GRADIENT_ACCUMULATION_STEPS=6  # 배치 줄인만큼 증가 (effective batch = 4
 MAX_SEQ_LENGTH=1024
 LEARNING_RATE=1e-4
 WARMUP_STEPS=2000
-NUM_EPOCHS=3
+NUM_EPOCHS=2
 
 # Output directory
 OUTPUT_DIR="outputs/pretrain-korean-instruction-${CONFIG_SIZE}"
