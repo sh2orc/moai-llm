@@ -49,15 +49,15 @@ OUTPUT_DIR="outputs/pretrain-korean-instruction-${CONFIG_SIZE}"
 # Dataset Configuration
 # ============================================================================
 
-# 여러 HuggingFace 데이터셋 사용
+# 여러 HuggingFace 데이터셋 사용 (콤마 없이!)
 DATASETS=(
     "sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft"
-    "maywell/korean_textbooks",
-    "openai/gsm8k",
-    "Congliu/Chinese-DeepSeek-R1-Distill-data-110k",
-    "izumi-lab/llm-japanese-dataset",
-    "saldra/sakura_japanese_dataset",
-    "fujiki/japanese_alpaca_data",
+    "maywell/korean_textbooks"
+    "openai/gsm8k"
+    "Congliu/Chinese-DeepSeek-R1-Distill-data-110k"
+    "izumi-lab/llm-japanese-dataset"
+    "saldra/sakura_japanese_dataset"
+    "fujiki/japanese_alpaca_data"
     "BCCard/BCAI-Finance-Kor-1862K"
     "HAERAE-HUB/KOREAN-WEBTEXT"
 )

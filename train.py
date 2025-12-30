@@ -163,9 +163,9 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     
     if dataset_config:
         logger.info(f"    Config: {dataset_config}")
-        raw_dataset = load_dataset(dataset_name, dataset_config, trust_remote_code=True)
+        raw_dataset = load_dataset(dataset_name, dataset_config)
     else:
-        raw_dataset = load_dataset(dataset_name, trust_remote_code=True)
+        raw_dataset = load_dataset(dataset_name)
     
     formatted_data = []
     
