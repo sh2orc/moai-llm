@@ -424,12 +424,201 @@ def setup_model_and_tokenizer(
 # 학습
 # ============================================================================
 
+def train_sequential(args):
+    """
+    데이터셋을 순차적으로 처리하는 학습 함수 (메모리 절약)
+    
+    각 데이터셋에 대해:
+    1. 해당 데이터셋만 로드
+    2. 토큰화 및 학습
+    3. 체크포인트 저장
+    4. 메모리 해제
+    5. 다음 데이터셋으로 (이전 체크포인트에서 resume)
+    """
+    import gc
+    
+    dataset_names = args.dataset if args.dataset else []
+    train_files = args.train_file if args.train_file else []
+    
+    # 모든 데이터 소스 리스트
+    all_sources = []
+    for ds in dataset_names:
+        all_sources.append(("hf", ds))
+    for f in train_files:
+        all_sources.append(("file", f))
+    
+    logger.info(f"📋 Processing {len(all_sources)} datasets sequentially:")
+    for i, (src_type, src_name) in enumerate(all_sources):
+        logger.info(f"  {i+1}. [{src_type}] {src_name}")
+    
+    current_checkpoint = args.pretrained_model
+    
+    for idx, (src_type, src_name) in enumerate(all_sources):
+        logger.info("="*80)
+        logger.info(f"🔄 [{idx+1}/{len(all_sources)}] Processing: {src_name}")
+        logger.info("="*80)
+        
+        # 1. 모델 및 토크나이저 로드
+        model, tokenizer = setup_model_and_tokenizer(
+            tokenizer_path=args.tokenizer_path,
+            model_config=args.model_config,
+            pretrained_model=current_checkpoint,
+        )
+        
+        # 2. 해당 데이터셋만 로드
+        if src_type == "hf":
+            dataset, text_column = load_pretrain_dataset(
+                dataset_names=[src_name],
+                dataset_config=args.dataset_config if idx == 0 else None,
+                train_files=None,
+                text_column=args.text_column,
+            )
+        else:
+            dataset, text_column = load_pretrain_dataset(
+                dataset_names=None,
+                dataset_config=None,
+                train_files=[src_name],
+                text_column=args.text_column,
+            )
+        
+        # 3. 토큰화
+        logger.info("🔤 Tokenizing dataset...")
+        
+        if args.packing:
+            logger.info(f"📦 Using sequence concatenation (packing mode)")
+            
+            tokenized_list = []
+            for i, text in enumerate(dataset["train"][text_column]):
+                tokens = tokenizer(
+                    text,
+                    truncation=False,
+                    padding=False,
+                    add_special_tokens=True,
+                )
+                tokenized_list.append(tokens)
+                
+                if (i + 1) % 10000 == 0:
+                    logger.info(f"  Tokenized {i + 1:,} / {len(dataset['train']):,} samples...")
+            
+            concatenated_chunks = concatenate_sequences(
+                tokenized_sequences=tokenized_list,
+                max_seq_length=args.max_seq_length,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+            
+            from datasets import Dataset as HFDataset
+            tokenized_dataset = HFDataset.from_list(concatenated_chunks)
+            
+            # 메모리 해제
+            del tokenized_list
+            del concatenated_chunks
+            gc.collect()
+        else:
+            def tokenize_function(examples):
+                return tokenizer(
+                    examples[text_column],
+                    truncation=True,
+                    max_length=args.max_seq_length,
+                    padding=False,
+                    return_special_tokens_mask=True,
+                )
+
+            tokenized_dataset = dataset["train"].map(
+                tokenize_function,
+                batched=True,
+                num_proc=args.num_proc,
+                remove_columns=dataset["train"].column_names,
+                desc="Tokenizing",
+            )
+        
+        # 원본 데이터셋 메모리 해제
+        del dataset
+        gc.collect()
+        
+        logger.info(f"✓ Tokenized {len(tokenized_dataset)} samples")
+        
+        # 4. 학습
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=False,
+        )
+        
+        # 출력 디렉토리 (각 데이터셋별)
+        stage_output_dir = f"{args.output_dir}/stage_{idx+1}"
+        
+        training_args = TrainingArguments(
+            output_dir=stage_output_dir,
+            num_train_epochs=args.num_epochs,
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            warmup_steps=args.warmup_steps if idx == 0 else 100,  # 첫 번째만 full warmup
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+            save_total_limit=2,
+            bf16=args.bf16,
+            fp16=args.fp16,
+            gradient_checkpointing=args.gradient_checkpointing,
+            dataloader_num_workers=args.dataloader_num_workers,
+            remove_unused_columns=False,
+            report_to="none",
+            max_steps=args.max_steps if args.max_steps > 0 else -1,
+        )
+        
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_dataset,
+            data_collator=data_collator,
+            tokenizer=tokenizer,
+        )
+        
+        logger.info(f"🏃 Training on dataset {idx+1}/{len(all_sources)}...")
+        trainer.train()
+        
+        # 5. 체크포인트 저장
+        checkpoint_path = f"{stage_output_dir}/checkpoint"
+        trainer.save_model(checkpoint_path)
+        logger.info(f"💾 Saved checkpoint to: {checkpoint_path}")
+        
+        # 다음 라운드를 위해 체크포인트 경로 업데이트
+        current_checkpoint = checkpoint_path
+        
+        # 6. 메모리 해제
+        del model
+        del tokenizer
+        del tokenized_dataset
+        del trainer
+        gc.collect()
+        
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except:
+            pass
+        
+        logger.info(f"✅ Completed dataset {idx+1}/{len(all_sources)}")
+    
+    # 최종 모델 저장
+    logger.info("="*80)
+    logger.info("🎯 Sequential training completed!")
+    logger.info(f"📁 Final model: {current_checkpoint}")
+    logger.info("="*80)
+
+
 def train(args):
     """메인 학습 함수"""
 
     logger.info("="*80)
     logger.info(f"🚀 Starting {args.mode.upper()} training")
     logger.info("="*80)
+
+    # Sequential 모드: 각 데이터셋을 순차적으로 처리
+    if args.sequential and args.dataset and len(args.dataset) > 1:
+        logger.info("📦 Sequential mode: Processing datasets one by one")
+        train_sequential(args)
+        return
 
     # 1. 모델 및 토크나이저 로드
     model, tokenizer = setup_model_and_tokenizer(
@@ -633,6 +822,14 @@ def main():
         help="Enable sequence packing/concatenation. "
              "Concatenates all sequences with EOS tokens and chunks into max_seq_length. "
              "Works for both pretrain and SFT modes."
+    )
+    
+    # Sequential 모드 (메모리 절약)
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Process datasets sequentially one by one to save memory. "
+             "Each dataset is loaded, trained, then freed before the next."
     )
 
     # 로깅

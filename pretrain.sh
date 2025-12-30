@@ -134,6 +134,7 @@ torchrun \
     --bf16 \
     --gradient_checkpointing \
     --packing \
+    --sequential \
     --logging_steps 10 \
     --save_steps 500 \
     --save_total_limit 3
