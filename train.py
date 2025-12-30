@@ -487,18 +487,29 @@ def train_sequential(args):
         if args.packing:
             logger.info(f"📦 Using sequence concatenation (packing mode)")
             
-            tokenized_list = []
-            for i, text in enumerate(dataset["train"][text_column]):
-                tokens = tokenizer(
-                    text,
+            # 배치 토큰화 (빠름)
+            def batch_tokenize(examples):
+                return tokenizer(
+                    examples[text_column],
                     truncation=False,
                     padding=False,
                     add_special_tokens=True,
                 )
-                tokenized_list.append(tokens)
-                
-                if (i + 1) % 10000 == 0:
-                    logger.info(f"  Tokenized {i + 1:,} / {len(dataset['train']):,} samples...")
+            
+            logger.info("  Batch tokenizing...")
+            tokenized_ds = dataset["train"].map(
+                batch_tokenize,
+                batched=True,
+                batch_size=1000,
+                num_proc=4,
+                remove_columns=dataset["train"].column_names,
+                desc="Tokenizing",
+            )
+            
+            # input_ids 리스트로 변환
+            tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+            del tokenized_ds
+            gc.collect()
             
             concatenated_chunks = concatenate_sequences(
                 tokenized_sequences=tokenized_list,
@@ -648,19 +659,28 @@ def train(args):
     if args.packing:
         logger.info(f"📦 Using sequence concatenation (packing mode) for {args.mode}")
         
-        # 각 샘플 토큰화 (truncation 없이)
-        tokenized_list = []
-        for i, text in enumerate(dataset["train"][text_column]):
-            tokens = tokenizer(
-                text,
+        # 배치 토큰화 (빠름)
+        def batch_tokenize(examples):
+            return tokenizer(
+                examples[text_column],
                 truncation=False,  # 연결할 것이므로 truncation 안함
                 padding=False,
                 add_special_tokens=True,
             )
-            tokenized_list.append(tokens)
-            
-            if (i + 1) % 10000 == 0:
-                logger.info(f"  Tokenized {i + 1:,} / {len(dataset['train']):,} samples...")
+        
+        logger.info("  Batch tokenizing...")
+        tokenized_ds = dataset["train"].map(
+            batch_tokenize,
+            batched=True,
+            batch_size=1000,
+            num_proc=args.num_proc,
+            remove_columns=dataset["train"].column_names,
+            desc="Tokenizing",
+        )
+        
+        # input_ids 리스트로 변환
+        tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+        del tokenized_ds
         
         # 시퀀스 연결 및 청킹
         concatenated_chunks = concatenate_sequences(
@@ -669,9 +689,13 @@ def train(args):
             eos_token_id=tokenizer.eos_token_id,
         )
         
+        del tokenized_list
+        
         # Dataset으로 변환
         from datasets import Dataset as HFDataset
         tokenized_dataset = HFDataset.from_list(concatenated_chunks)
+        
+        del concatenated_chunks
         
     else:
         # 기존 방식: 개별 샘플 토큰화 with truncation
