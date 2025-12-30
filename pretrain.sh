@@ -22,7 +22,7 @@ NUM_GPUS=${NUM_GPUS:-4}
 case $CONFIG_SIZE in
     2b)
         MODEL_CONFIG="configs/model_config_2b.json"
-        BATCH_SIZE=4
+        BATCH_SIZE=32
         ;;
     5b)
         MODEL_CONFIG="configs/model_config.json"
