@@ -1,8 +1,6 @@
 """
 토크나이저 학습 스크립트 (HuggingFace Tokenizers - Rust 기반, 초고속)
 
-🚀 SentencePiece 대비 10~100배 빠른 학습 속도!
-
 사용법:
     # Step 1: 다국어 64K
     python train_tokenizer.py \
