@@ -36,7 +36,7 @@ esac
 
 # Common settings
 TOKENIZER_PATH="tokenizers/moai"
-GRADIENT_ACCUMULATION_STEPS=12  # 배치 줄인만큼 증가 (effective batch = 4*4*12 = 192)
+GRADIENT_ACCUMULATION_STEPS=6  # 배치 줄인만큼 증가 (effective batch = 4*4*12 = 192)
 MAX_SEQ_LENGTH=1024
 LEARNING_RATE=1e-6
 WARMUP_STEPS=2000

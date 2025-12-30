@@ -225,6 +225,45 @@ Key parameters:
 - `bf16`: Mixed precision training (true recommended)
 - `gradient_checkpointing`: Memory optimization
 
+### Batch Size & Gradient Accumulation Guide
+
+**Effective Batch Size Formula**:
+```
+Effective Batch = BATCH_SIZE × NUM_GPUS × GRADIENT_ACCUMULATION_STEPS
+```
+
+**Recommended Effective Batch Size by Model Size**:
+
+| Model Size | Recommended Effective Batch | Notes |
+|------------|----------------------------|-------|
+| 1-3B | 256 ~ 512 | Stable training |
+| 7B+ | 512 ~ 1024 | Large-scale training |
+| Research | 128 ~ 256 | Fast iteration |
+
+**Example Configurations (4 GPUs, 32GB each)**:
+
+| BATCH_SIZE | GRAD_ACC | Effective Batch | Use Case |
+|------------|----------|-----------------|----------|
+| 16 | 4 | 256 | ✅ Recommended (stable) |
+| 16 | 6 | 384 | ✅ Recommended (balanced) |
+| 20 | 4 | 320 | Aggressive (test first) |
+| 8 | 8 | 256 | Memory-constrained |
+
+**Memory Usage Estimation (2B model, bf16)**:
+
+| Component | Memory |
+|-----------|--------|
+| Model weights | ~4 GB |
+| Optimizer (AdamW) | ~16 GB |
+| Gradients | ~4 GB |
+| **Fixed total** | **~24 GB** |
+| Activations + Loss | Varies by batch |
+
+**Tips**:
+- Start with `BATCH_SIZE=16, GRAD_ACC=4` and increase if no OOM
+- Larger `GRADIENT_ACCUMULATION_STEPS` = more stable but slower updates
+- With Chunked Cross-Entropy, batch sizes of 16-20 are typically safe for 32GB GPUs
+
 ### Loss Configuration
 
 ```yaml
