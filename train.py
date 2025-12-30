@@ -158,7 +158,19 @@ def _load_single_file(file_path: str) -> list:
 
 
 def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) -> list:
-    """단일 HuggingFace 데이터셋을 로드하여 텍스트 리스트로 반환"""
+    """
+    단일 HuggingFace 데이터셋을 로드하여 텍스트 리스트로 반환
+    
+    데이터셋 이름에 config를 포함할 수 있음:
+        - "dataset_name:config_name" 형식 지원
+        - 예: "maywell/korean_textbooks:claude_evol"
+    """
+    # dataset_name:config_name 형식 파싱
+    if ":" in dataset_name:
+        dataset_name, config_from_name = dataset_name.split(":", 1)
+        if not dataset_config:
+            dataset_config = config_from_name
+    
     logger.info(f"  Loading HuggingFace: {dataset_name}")
     
     if dataset_config:

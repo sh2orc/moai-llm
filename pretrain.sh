@@ -50,10 +50,10 @@ OUTPUT_DIR="outputs/pretrain-korean-instruction-${CONFIG_SIZE}"
 # ============================================================================
 
 # 여러 HuggingFace 데이터셋 사용 (콤마 없이!)
+# config가 필요한 경우: "dataset_name:config_name" 형식 사용
 DATASETS=(
     "sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft"
-    "maywell/korean_textbooks"
-    "openai/gsm8k"
+    "lcw99/wikipedia-korean-20240501-1million-qna"
     "Congliu/Chinese-DeepSeek-R1-Distill-data-110k"
     "izumi-lab/llm-japanese-dataset"
     "saldra/sakura_japanese_dataset"
