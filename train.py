@@ -437,8 +437,21 @@ def setup_model_and_tokenizer(
     pretrained_model: Optional[str] = None,
     use_flash_attention: bool = False,
     use_compile: bool = False,
+    use_bf16: bool = False,
+    use_fp16: bool = False,
 ):
     """모델과 토크나이저 초기화"""
+
+    # dtype 결정
+    if use_bf16:
+        dtype = torch.bfloat16
+        dtype_str = "bfloat16"
+    elif use_fp16:
+        dtype = torch.float16
+        dtype_str = "float16"
+    else:
+        dtype = torch.float32
+        dtype_str = "float32"
 
     # 토크나이저
     logger.info(f"📝 Loading tokenizer from: {tokenizer_path}")
@@ -450,7 +463,8 @@ def setup_model_and_tokenizer(
     # 모델
     if pretrained_model:
         logger.info(f"🔄 Loading pretrained model: {pretrained_model}")
-        model = MoaiForCausalLM.from_pretrained(pretrained_model)
+        model = MoaiForCausalLM.from_pretrained(pretrained_model, torch_dtype=dtype)
+        logger.info(f"  Model dtype: {dtype_str}")
     else:
         logger.info("🆕 Creating new model from config")
         if model_config:
@@ -468,6 +482,11 @@ def setup_model_and_tokenizer(
                 logger.warning("⚠️ flash-attn not installed, using standard attention")
         
         model = MoaiForCausalLM(config)
+        
+        # dtype 변환 (새 모델인 경우)
+        if dtype != torch.float32:
+            model = model.to(dtype)
+            logger.info(f"  Model dtype: {dtype_str}")
     
     # torch.compile 적용 (PyTorch 2.0+)
     if use_compile:
@@ -530,6 +549,8 @@ def train_sequential(args):
             pretrained_model=current_checkpoint,
             use_flash_attention=args.flash_attention,
             use_compile=args.compile,
+            use_bf16=args.bf16,
+            use_fp16=args.fp16,
         )
         
         # 2. 해당 데이터셋만 로드
@@ -712,6 +733,8 @@ def train(args):
         pretrained_model=args.pretrained_model,
         use_flash_attention=args.flash_attention,
         use_compile=args.compile,
+        use_bf16=args.bf16,
+        use_fp16=args.fp16,
     )
 
     # 2. 데이터셋 로드
