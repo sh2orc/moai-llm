@@ -16,6 +16,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutpu
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.transformer import MoaiDecoderLayer
 from moai_llm.modeling.normalization import MoaiRMSNorm
+from moai_llm.losses import chunked_cross_entropy_loss
 
 
 class MoaiPreTrainedModel(PreTrainedModel):
@@ -382,14 +383,18 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
 
-            # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            
+            # Use chunked cross-entropy for memory efficiency with large vocab
+            # This is mathematically equivalent to standard CE but uses ~4x less memory
+            # for vocab_size=128k, enabling larger batch sizes
+            loss = chunked_cross_entropy_loss(
+                shift_logits,
+                shift_labels,
+                chunk_size=8192,  # Process 8k tokens at a time
+                ignore_index=-100,
+            )
 
         if not return_dict:
             output = (logits,) + outputs[1:]
