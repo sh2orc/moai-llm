@@ -1,0 +1,24 @@
+{
+  "vocab_size": 128000,
+  "hidden_size": 3840,
+  "intermediate_size": 10240,
+  "num_hidden_layers": 14,
+  "num_attention_heads": 30,
+  "num_key_value_heads": 5,
+  "max_position_embeddings": 32768,
+  "rope_theta": 1000000.0,
+  "rope_scaling": null,
+  "rms_norm_eps": 1e-06,
+  "use_qk_norm": true,
+  "hidden_act": "swiglu",
+  "tie_word_embeddings": false,
+  "attention_dropout": 0.0,
+  "initializer_range": 0.02,
+  "use_cache": true,
+  "attention_bias": false,
+  "mlp_bias": false,
+  "pad_token_id": 0,
+  "bos_token_id": 1,
+  "eos_token_id": 2
+}
+
