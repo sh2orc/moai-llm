@@ -10,7 +10,7 @@ Implements the full causal language model with:
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Union, List
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 
 from moai_llm.config import MoaiConfig
@@ -278,7 +278,7 @@ class MoaiModel(MoaiPreTrainedModel):
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
-class MoaiForCausalLM(MoaiPreTrainedModel):
+class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
     """
     MOAI model with a language modeling head.
 
