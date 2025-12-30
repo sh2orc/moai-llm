@@ -93,24 +93,49 @@ def concatenate_sequences(
     Returns:
         연결 후 max_seq_length로 분할된 시퀀스 리스트
     """
-    # 모든 시퀀스를 하나로 연결 (각 끝에 EOS 추가)
-    all_tokens = []
+    import numpy as np
+    
+    # 1. 총 길이 계산 (메모리 미리 할당용)
+    total_len = 0
+    for seq in tokenized_sequences:
+        input_ids = seq["input_ids"]
+        total_len += len(input_ids)
+        if len(input_ids) > 0 and input_ids[-1] != eos_token_id:
+            total_len += 1  # EOS 추가될 예정
+    
+    logger.info(f"📦 Concatenating {len(tokenized_sequences):,} sequences into ~{total_len:,} tokens")
+    
+    # 2. numpy 배열로 빠르게 연결 (메모리 효율적)
+    all_tokens = np.empty(total_len, dtype=np.int32)
+    offset = 0
     
     for seq in tokenized_sequences:
         input_ids = seq["input_ids"]
+        seq_len = len(input_ids)
         
-        # 이미 EOS로 끝나지 않는 경우에만 EOS 추가
-        if len(input_ids) > 0 and input_ids[-1] != eos_token_id:
-            input_ids = input_ids + [eos_token_id]
+        if seq_len == 0:
+            continue
+            
+        # 배열에 복사
+        all_tokens[offset:offset + seq_len] = input_ids
+        offset += seq_len
         
-        all_tokens.extend(input_ids)
+        # EOS 추가
+        if input_ids[-1] != eos_token_id:
+            all_tokens[offset] = eos_token_id
+            offset += 1
     
-    logger.info(f"📦 Concatenating {len(tokenized_sequences)} sequences into {len(all_tokens):,} tokens")
+    # 실제 사용된 길이로 자르기
+    all_tokens = all_tokens[:offset]
     
-    # max_seq_length 청크로 분할
+    # 3. max_seq_length 청크로 분할 (list comprehension으로 빠르게)
+    num_chunks = (len(all_tokens) + max_seq_length - 1) // max_seq_length
     chunks = []
-    for i in range(0, len(all_tokens), max_seq_length):
-        chunk = all_tokens[i:i + max_seq_length]
+    
+    for i in range(num_chunks):
+        start = i * max_seq_length
+        end = min(start + max_seq_length, len(all_tokens))
+        chunk = all_tokens[start:end].tolist()
         
         # 마지막 청크가 너무 짧으면 (< 128) 버림
         if len(chunk) < 128:
@@ -122,7 +147,7 @@ def concatenate_sequences(
             "attention_mask": [1] * len(chunk),
         })
     
-    logger.info(f"✓ Created {len(chunks)} chunks of max {max_seq_length} tokens each")
+    logger.info(f"✓ Created {len(chunks):,} chunks of max {max_seq_length} tokens each")
     
     return chunks
 
@@ -179,19 +204,38 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     else:
         raw_dataset = load_dataset(dataset_name)
     
-    formatted_data = []
-    
     # train split 사용
     train_data = raw_dataset.get("train", raw_dataset)
-    if hasattr(train_data, "__iter__"):
-        for item in train_data:
-            # dict가 아닌 경우 (예: IterableDataset)
-            if not isinstance(item, dict):
-                continue
-            
+    
+    # dataset.map()으로 빠르게 변환
+    def convert_batch(examples):
+        texts = []
+        # 각 컬럼을 개별 딕셔너리로 재구성
+        keys = list(examples.keys())
+        num_examples = len(examples[keys[0]]) if keys else 0
+        
+        for i in range(num_examples):
+            item = {k: examples[k][i] for k in keys}
             text = _convert_to_text(item)
-            if text:
-                formatted_data.append({"text": text})
+            texts.append(text if text else "")
+        
+        return {"text": texts}
+    
+    # 배치 처리로 변환 (빠름)
+    converted = train_data.map(
+        convert_batch,
+        batched=True,
+        batch_size=1000,
+        num_proc=4,
+        remove_columns=train_data.column_names,
+        desc=f"Converting {dataset_name}",
+    )
+    
+    # 빈 텍스트 필터링
+    converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=4)
+    
+    # 리스트로 변환
+    formatted_data = [{"text": t} for t in converted["text"]]
     
     logger.info(f"    → {len(formatted_data):,} samples")
     return formatted_data
@@ -575,6 +619,11 @@ def train_sequential(args):
             remove_unused_columns=False,
             report_to="none",
             max_steps=args.max_steps if args.max_steps > 0 else -1,
+            # 추가 최적화 옵션
+            dataloader_pin_memory=True,
+            dataloader_prefetch_factor=2,
+            optim="adamw_torch_fused" if args.bf16 or args.fp16 else "adamw_torch",
+            ddp_find_unused_parameters=False,
         )
         
         trainer = Trainer(
@@ -724,7 +773,7 @@ def train(args):
         mlm=False,  # Causal LM
     )
 
-    # 5. Training Arguments
+    # 5. Training Arguments (최적화 옵션 포함)
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_epochs,
@@ -743,6 +792,12 @@ def train(args):
         remove_unused_columns=False,
         report_to="none",
         max_steps=args.max_steps if args.max_steps > 0 else -1,
+        # 추가 최적화 옵션
+        dataloader_pin_memory=True,  # GPU 전송 속도 향상
+        dataloader_prefetch_factor=2,  # 미리 배치 로드
+        optim="adamw_torch_fused" if args.bf16 or args.fp16 else "adamw_torch",  # Fused optimizer
+        torch_compile=False,  # PyTorch 2.0 compile (실험적)
+        ddp_find_unused_parameters=False,  # DDP 최적화
     )
 
     # 6. Trainer
