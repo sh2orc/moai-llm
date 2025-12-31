@@ -666,10 +666,13 @@ def train_sequential(args):
             # 추가 최적화 옵션
             dataloader_pin_memory=True,
             dataloader_prefetch_factor=4,
-            optim="adamw_bnb_8bit",  # 8-bit Adam: 16GB → 4GB optimizer memory
+            dataloader_drop_last=True,  # 불완전 배치 제거 (속도↑)
+            optim="adamw_8bit",  # 8-bit Adam
             ddp_find_unused_parameters=False,
             tf32=True,
             group_by_length=False,
+            max_grad_norm=1.0,  # 그래디언트 클리핑
+            gradient_checkpointing_kwargs={"use_reentrant": False},  # 최신 방식
         )
         
         trainer = Trainer(
@@ -845,11 +848,13 @@ def train(args):
         # 추가 최적화 옵션
         dataloader_pin_memory=True,  # GPU 전송 속도 향상
         dataloader_prefetch_factor=4,  # 미리 배치 로드 (증가)
-        optim="adamw_torch_fused" if args.bf16 or args.fp16 else "adamw_torch",  # Fused optimizer
+        dataloader_drop_last=True,  # 불완전 배치 제거 (속도↑)
+        optim="adamw_8bit",  # 8-bit Adam: 메모리 75% 절약
         ddp_find_unused_parameters=False,  # DDP 최적화
-        # 추가 속도 향상
         tf32=True,  # TF32 사용 (Ampere GPU)
         group_by_length=False,  # 길이별 그룹핑 비활성화 (packing 사용시)
+        max_grad_norm=1.0,  # 그래디언트 클리핑
+        gradient_checkpointing_kwargs={"use_reentrant": False},  # 최신 방식
     )
 
     # 6. Trainer

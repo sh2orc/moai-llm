@@ -22,7 +22,7 @@ NUM_GPUS=${NUM_GPUS:-4}
 case $CONFIG_SIZE in
     2b)
         MODEL_CONFIG="configs/model_config_2b.json"
-        BATCH_SIZE=8  # 2B model + 8-bit Adam + SDPA = ~20GB base
+        BATCH_SIZE=8  # 2B model + 8-bit Adam + SDPA
         ;;
     5b)
         MODEL_CONFIG="configs/model_config.json"
@@ -140,8 +140,9 @@ torchrun \
     --packing \
     --sequential \
     --flash_attention \
+    --compile \
     --num_proc 8 \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 8 \
     --logging_steps 10 \
     --save_steps 500 \
     --save_total_limit 3
