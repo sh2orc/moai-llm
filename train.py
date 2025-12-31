@@ -667,7 +667,7 @@ def train_sequential(args):
             dataloader_pin_memory=True,
             dataloader_prefetch_factor=4,
             dataloader_drop_last=True,  # 불완전 배치 제거 (속도↑)
-            optim="adamw_8bit",  # 8-bit Adam
+            optim="adamw_torch_fused",  # Fused Adam (faster than 8-bit)
             ddp_find_unused_parameters=False,
             tf32=True,
             group_by_length=False,
@@ -849,7 +849,7 @@ def train(args):
         dataloader_pin_memory=True,  # GPU 전송 속도 향상
         dataloader_prefetch_factor=4,  # 미리 배치 로드 (증가)
         dataloader_drop_last=True,  # 불완전 배치 제거 (속도↑)
-        optim="adamw_8bit",  # 8-bit Adam: 메모리 75% 절약
+        optim="adamw_torch_fused",  # Fused Adam (faster than 8-bit)
         ddp_find_unused_parameters=False,  # DDP 최적화
         tf32=True,  # TF32 사용 (Ampere GPU)
         group_by_length=False,  # 길이별 그룹핑 비활성화 (packing 사용시)

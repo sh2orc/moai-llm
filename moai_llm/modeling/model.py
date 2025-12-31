@@ -9,6 +9,7 @@ Implements the full causal language model with:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, Tuple, Union, List
 from transformers import PreTrainedModel, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
@@ -16,7 +17,6 @@ from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutpu
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.transformer import MoaiDecoderLayer
 from moai_llm.modeling.normalization import MoaiRMSNorm
-from moai_llm.losses import chunked_cross_entropy_loss
 
 
 class MoaiPreTrainedModel(PreTrainedModel):
@@ -372,29 +372,21 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
 
         hidden_states = outputs[0]
 
-        # Language modeling head
+        # Language modeling head (keep in bf16/fp16 for speed)
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
+        # Note: float() conversion removed - cross_entropy handles bf16 natively
 
         # Compute loss if labels provided
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
+            # Use reshape instead of contiguous().view() for efficiency
+            vocab_size = logits.size(-1)
+            shift_logits = logits[..., :-1, :].reshape(-1, vocab_size)
+            shift_labels = labels[..., 1:].reshape(-1).to(shift_logits.device)
             
-            # Use chunked cross-entropy for memory efficiency with large vocab
-            # This is mathematically equivalent to standard CE but uses ~4x less memory
-            # for vocab_size=128k, enabling larger batch sizes
-            loss = chunked_cross_entropy_loss(
-                shift_logits,
-                shift_labels,
-                chunk_size=2048,  # With SDPA, can use larger chunks (faster)
-                ignore_index=-100,
-            )
+            # Direct cross-entropy (fastest method)
+            loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
 
         if not return_dict:
             output = (logits,) + outputs[1:]

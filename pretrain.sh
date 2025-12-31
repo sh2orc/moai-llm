@@ -29,8 +29,8 @@ case $CONFIG_SIZE in
                 GRADIENT_ACCUMULATION_STEPS=24  # effective = 4*4*24 = 384
                 ;;
             48)
-                BATCH_SIZE=16  # A40 48GB (increased from 12)
-                GRADIENT_ACCUMULATION_STEPS=4   # effective = 16*8*4 = 512 (8 GPUs)
+                BATCH_SIZE=12  # A40 48GB
+                GRADIENT_ACCUMULATION_STEPS=4   # effective = 12*8*4 = 384 (8 GPUs)
                 ;;
             80)
                 BATCH_SIZE=24  # A100 80GB
