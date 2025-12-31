@@ -36,6 +36,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     Repeat key/value tensors to match the number of query heads.
 
     This is used for Grouped Query Attention to expand KV heads to match Q heads.
+    Uses repeat_interleave for better memory access patterns.
 
     Args:
         hidden_states: Tensor of shape (batch, num_kv_heads, seq_len, head_dim)
@@ -44,14 +45,12 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     Returns:
         Tensor of shape (batch, num_query_heads, seq_len, head_dim)
     """
-    batch, num_kv_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-
-    hidden_states = hidden_states[:, :, None, :, :].expand(
-        batch, num_kv_heads, n_rep, slen, head_dim
-    )
-    return hidden_states.reshape(batch, num_kv_heads * n_rep, slen, head_dim)
+    
+    # repeat_interleave is more memory-efficient than expand+reshape
+    # as it creates a contiguous tensor directly
+    return hidden_states.repeat_interleave(n_rep, dim=1)
 
 
 class MoaiAttention(nn.Module):
@@ -334,11 +333,12 @@ class MoaiAttention(nn.Module):
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
 
-        # Softmax and dropout
+        # Softmax (compute in float32 for numerical stability, then cast back)
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-        attn_weights = F.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        
+        # Dropout only if needed (skip F.dropout call when dropout=0)
+        if self.attention_dropout > 0 and self.training:
+            attn_weights = F.dropout(attn_weights, p=self.attention_dropout, training=True)
 
         # Compute output
-        attn_output = torch.matmul(attn_weights, value)
-
-        return attn_output
+        return torch.matmul(attn_weights, value)

@@ -5,7 +5,7 @@ Provides easy-to-use inference pipeline for text generation.
 """
 
 import torch
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from transformers import AutoTokenizer, GenerationConfig
 
 from moai_llm.modeling.model import MoaiForCausalLM
@@ -97,8 +97,8 @@ class MoaiInferencePipeline:
             truncation=True,
         ).to(self.device)
 
-        # Generate
-        with torch.no_grad():
+        # Generate (inference_mode is faster than no_grad)
+        with torch.inference_mode():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,

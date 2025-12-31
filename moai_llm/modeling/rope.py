@@ -181,9 +181,15 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     Rotate half the hidden dims of the input.
 
     This is a helper function for applying rotary embeddings.
+    Uses chunk() instead of slicing for better efficiency.
+
+    Args:
+        x: Input tensor of shape (..., head_dim)
+
+    Returns:
+        Rotated tensor with first and second half swapped and negated
     """
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    x1, x2 = x.chunk(2, dim=-1)  # More efficient than slicing
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -211,12 +217,13 @@ def apply_rotary_pos_emb(
     """
     # cos/sin shape: (seq_len, head_dim) → (1, 1, seq_len, head_dim)
     # to broadcast with q/k: (batch, num_heads, seq_len, head_dim)
-    cos = cos.unsqueeze(0).unsqueeze(0)
-    sin = sin.unsqueeze(0).unsqueeze(0)
+    # Use indexing instead of unsqueeze() for efficiency
+    cos = cos[None, None, :, :]
+    sin = sin[None, None, :, :]
 
     # Apply rotation using the formula:
     # q_embed = q * cos + rotate_half(q) * sin
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    q_embed = q * cos + rotate_half(q) * sin
+    k_embed = k * cos + rotate_half(k) * sin
 
     return q_embed, k_embed

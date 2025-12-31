@@ -46,13 +46,22 @@ def main():
     print(f"Loading tokenizer from: {args.tokenizer_path}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
-    model = AutoModelForCausalLM.from_pretrained(args.model_path)
-    model.eval()
-
-    # GPU 사용
+    
+    # GPU 사용 및 bf16 로드 (메모리 절약 + 속도 향상)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    model = model.to(device)
+    
+    if device == "cuda":
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.model_path)
+        model = model.to(device)
+    
+    model.eval()
 
     print("="*80)
     print("Ready! Type 'exit' to quit.")
@@ -81,8 +90,8 @@ def main():
         # 토큰화
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
-        # 생성
-        with torch.no_grad():
+        # 생성 (inference_mode가 no_grad보다 빠름)
+        with torch.inference_mode():
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=args.max_new_tokens,
