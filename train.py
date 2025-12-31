@@ -485,12 +485,11 @@ def setup_model_and_tokenizer(
             except ImportError:
                 logger.warning("⚠️ flash-attn not installed, using standard attention")
         
+        # 새 모델 생성 시 dtype 지정
+        config.torch_dtype = dtype
         model = MoaiForCausalLM(config)
-        
-        # dtype 변환 (새 모델인 경우)
-        if dtype != torch.float32:
-            model = model.to(dtype)
-            logger.info(f"  Model dtype: {dtype_str}")
+        model = model.to(dtype)
+        logger.info(f"  Model dtype: {dtype_str}")
     
     # torch.compile 적용 (PyTorch 2.0+)
     # Note: mode="default" is more stable with DDP than "reduce-overhead"

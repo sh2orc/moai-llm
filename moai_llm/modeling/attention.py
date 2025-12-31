@@ -193,7 +193,14 @@ class MoaiAttention(nn.Module):
         value_states = repeat_kv(value_states, self.num_kv_groups)
 
         # Compute attention (priority: Flash Attention > SDPA > Standard)
-        if FLASH_ATTENTION_AVAILABLE and not output_attentions:
+        # Flash Attention only supports fp16/bf16, fallback to SDPA for fp32
+        use_flash = (
+            FLASH_ATTENTION_AVAILABLE
+            and not output_attentions
+            and query_states.dtype in (torch.float16, torch.bfloat16)
+        )
+        
+        if use_flash:
             # Use Flash Attention for efficient computation
             attn_output = self._flash_attention(
                 query_states, key_states, value_states, attention_mask, q_len
