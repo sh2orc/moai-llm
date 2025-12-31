@@ -2,15 +2,19 @@
 torch>=2.8.0
 transformers>=4.57.0
 sentencepiece>=0.2.0
-tokenizers>=0.21.0
+tokenizers>=0.21.0  # Rust-based tokenizer
 datasets>=4.4.0
 accelerate>=1.0.0
-safetensors>=0.7.0
+safetensors>=0.7.0  # Rust-based tensor serialization
 pyyaml>=6.0
 tqdm>=4.66.0
 numpy>=2.0.0
 einops>=0.8.1
 hf_transfer
+
+# Rust-based fast packages
+orjson>=3.10.0  # 10-50x faster JSON (Rust)
+regex>=2024.0.0  # Rust-based regex, faster than re
 
 # Fine-tuning dependencies
 peft>=0.18.0

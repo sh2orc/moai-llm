@@ -51,7 +51,10 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-import json
+try:
+    import orjson as json  # Rust-based, 10-50x faster
+except ImportError:
+    import json  # Fallback to standard json
 
 import torch
 from transformers import (
@@ -161,11 +164,11 @@ def _load_single_file(file_path: str) -> list:
     formatted_data = []
     
     if file_path.endswith('.json') or file_path.endswith('.jsonl'):
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'rb') as f:  # Binary mode for orjson
             if file_path.endswith('.jsonl'):
                 data = [json.loads(line) for line in f if line.strip()]
             else:
-                data = json.load(f)
+                data = json.loads(f.read())  # orjson uses loads() not load()
         
         for item in data:
             text = _convert_to_text(item)
@@ -225,9 +228,10 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     converted = train_data.map(
         convert_batch,
         batched=True,
-        batch_size=1000,
-        num_proc=4,
+        batch_size=5000,  # Increased for less overhead
+        num_proc=min(16, os.cpu_count() or 4),
         remove_columns=train_data.column_names,
+        load_from_cache_file=False,
         desc=f"Converting {dataset_name}",
     )
     
@@ -589,9 +593,10 @@ def train_sequential(args):
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
-                batch_size=1000,
-                num_proc=4,
+                batch_size=5000,  # Increased for less overhead
+                num_proc=args.num_proc,
                 remove_columns=dataset["train"].column_names,
+                load_from_cache_file=False,  # Skip cache check
                 desc="Tokenizing",
             )
             
@@ -626,8 +631,10 @@ def train_sequential(args):
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
+                batch_size=5000,
                 num_proc=args.num_proc,
                 remove_columns=dataset["train"].column_names,
+                load_from_cache_file=False,
                 desc="Tokenizing",
             )
         
@@ -775,9 +782,10 @@ def train(args):
         tokenized_ds = dataset["train"].map(
             batch_tokenize,
             batched=True,
-            batch_size=1000,
+            batch_size=5000,  # Increased for less overhead
             num_proc=args.num_proc,
             remove_columns=dataset["train"].column_names,
+            load_from_cache_file=False,  # Skip cache check
             desc="Tokenizing",
         )
         
@@ -814,8 +822,10 @@ def train(args):
         tokenized_dataset = dataset["train"].map(
             tokenize_function,
             batched=True,
+            batch_size=5000,
             num_proc=args.num_proc,
             remove_columns=dataset["train"].column_names,
+            load_from_cache_file=False,
             desc="Tokenizing",
         )
 

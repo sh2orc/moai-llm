@@ -9,8 +9,12 @@ MOAI 토크나이저 테스트 스크립트
 """
 
 import argparse
-import json
 from pathlib import Path
+
+try:
+    import orjson as json  # Rust-based, faster
+except ImportError:
+    import json
 
 
 def load_tokenizer_info(tokenizer_path: str) -> dict:
@@ -25,8 +29,8 @@ def load_tokenizer_info(tokenizer_path: str) -> dict:
     else:
         raise FileNotFoundError(f"Tokenizer not found: {tokenizer_path}")
     
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    with open(json_path, 'rb') as f:  # Binary for orjson
+        data = json.loads(f.read())
     
     vocab = data.get('model', {}).get('vocab', {})
     merges = data.get('model', {}).get('merges', [])
