@@ -486,7 +486,7 @@ def setup_model_and_tokenizer(
                 logger.warning("⚠️ flash-attn not installed, using standard attention")
         
         # 새 모델 생성 시 dtype 지정
-        config.torch_dtype = dtype
+        config.dtype = dtype
         model = MoaiForCausalLM(config)
         model = model.to(dtype)
         logger.info(f"  Model dtype: {dtype_str}")
