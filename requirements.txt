@@ -15,6 +15,7 @@ hf_transfer
 # Fine-tuning dependencies
 peft>=0.18.0
 trl>=0.26.0
+bitsandbytes>=0.45.0  # 8-bit Adam optimizer
 
 # Training dependencies
 deepspeed>=0.18.0

@@ -666,7 +666,7 @@ def train_sequential(args):
             # 추가 최적화 옵션
             dataloader_pin_memory=True,
             dataloader_prefetch_factor=4,
-            optim="adamw_torch_fused" if args.bf16 or args.fp16 else "adamw_torch",
+            optim="adamw_bnb_8bit",  # 8-bit Adam: 16GB → 4GB optimizer memory
             ddp_find_unused_parameters=False,
             tf32=True,
             group_by_length=False,

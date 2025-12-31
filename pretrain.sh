@@ -22,7 +22,7 @@ NUM_GPUS=${NUM_GPUS:-4}
 case $CONFIG_SIZE in
     2b)
         MODEL_CONFIG="configs/model_config_2b.json"
-        BATCH_SIZE=12  # 2B model + vocab=92k + SDPA, 32GB GPU
+        BATCH_SIZE=8  # 2B model + 8-bit Adam + SDPA = ~20GB base
         ;;
     5b)
         MODEL_CONFIG="configs/model_config.json"
@@ -36,7 +36,7 @@ esac
 
 # Common settings
 TOKENIZER_PATH="tokenizers/moai"
-GRADIENT_ACCUMULATION_STEPS=8  # effective batch = 12*4*8 = 384
+GRADIENT_ACCUMULATION_STEPS=12  # effective batch = 8*4*12 = 384
 MAX_SEQ_LENGTH=1024
 LEARNING_RATE=1e-4
 WARMUP_STEPS=2000

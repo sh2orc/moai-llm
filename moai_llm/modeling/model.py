@@ -392,7 +392,7 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
             loss = chunked_cross_entropy_loss(
                 shift_logits,
                 shift_labels,
-                chunk_size=2048,  # With SDPA, can use larger chunks (faster)
+                chunk_size=4096,  # With SDPA, can use larger chunks (faster)
                 ignore_index=-100,
             )
 
