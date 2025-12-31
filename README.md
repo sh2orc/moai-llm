@@ -48,7 +48,10 @@ A state-of-the-art 3B parameter language model based on Qwen3 architecture, feat
 - Python 3.10+
 - PyTorch 2.5+
 - CUDA 11.8+ (for GPU training)
-- 80GB+ GPU memory (recommended: 8× A100 80GB)
+- GPU Options:
+  - **4× RTX 5090 32GB**: 2B model with vocab=128k (batch=8)
+  - **4× RTX 4090 24GB**: 2B model with vocab=64k (batch=4)
+  - **8× A100 80GB**: Full 3B model (recommended for production)
 
 ### Install from Source
 
@@ -240,29 +243,35 @@ Effective Batch = BATCH_SIZE × NUM_GPUS × GRADIENT_ACCUMULATION_STEPS
 | 7B+ | 512 ~ 1024 | Large-scale training |
 | Research | 128 ~ 256 | Fast iteration |
 
-**Example Configurations (4 GPUs, 32GB each)**:
+**Example Configurations (4× RTX 5090 32GB)**:
 
 | BATCH_SIZE | GRAD_ACC | Effective Batch | Use Case |
 |------------|----------|-----------------|----------|
-| 16 | 4 | 256 | ✅ Recommended (stable) |
-| 16 | 6 | 384 | ✅ Recommended (balanced) |
-| 20 | 4 | 320 | Aggressive (test first) |
-| 8 | 8 | 256 | Memory-constrained |
+| **4** | **24** | **384** | ✅ **Recommended for 2B + vocab=128k** |
+| 4 | 16 | 256 | Stable, lower throughput |
+| 2 | 32 | 256 | Very memory-constrained |
 
-**Memory Usage Estimation (2B model, bf16)**:
+⚠️ **Important**: With large vocab (128k) + 2B model, even batch_size=8 causes OOM on 32GB GPUs!
 
-| Component | Memory |
-|-----------|--------|
-| Model weights | ~4 GB |
-| Optimizer (AdamW) | ~16 GB |
-| Gradients | ~4 GB |
-| **Fixed total** | **~24 GB** |
-| Activations + Loss | Varies by batch |
+**Memory Usage (2B model, vocab=128k, bf16, seq=1024)**:
+
+| Component | Memory | Notes |
+|-----------|--------|-------|
+| Model weights | ~4 GB | bf16 |
+| Optimizer (AdamW) | ~16 GB | fp32 states |
+| Gradients | ~4 GB | bf16 |
+| DDP buffers & overhead | ~6-7 GB | Multi-GPU sync |
+| **Fixed total** | **~30-31 GB** | |
+| Activations (batch=4) | ~1-2 GB | With gradient checkpointing |
+| Activations (batch=8) | ~3-4 GB | ❌ OOM on 32GB! |
+| **Working total (batch=4)** | **~31-32 GB** | ⚠️ Tight fit |
 
 **Tips**:
-- Start with `BATCH_SIZE=16, GRAD_ACC=4` and increase if no OOM
-- Larger `GRADIENT_ACCUMULATION_STEPS` = more stable but slower updates
-- With Chunked Cross-Entropy, batch sizes of 16-20 are typically safe for 32GB GPUs
+- For **2B model + vocab=128k** on 32GB GPU: use `BATCH_SIZE=4`
+- DDP overhead is significant (~6-7GB) - single GPU may allow larger batches
+- Chunked Cross-Entropy with `chunk_size=1024` is essential for large vocab
+- Always enable `--gradient_checkpointing` for memory savings
+- Consider reducing vocab_size (64k) or model size for more headroom
 
 ### Learning Rate Guide
 
