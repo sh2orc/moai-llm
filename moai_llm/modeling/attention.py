@@ -27,6 +27,9 @@ try:
 except ImportError:
     FLASH_ATTENTION_AVAILABLE = False
 
+# PyTorch 2.0+ SDPA (Scaled Dot Product Attention) - always available
+SDPA_AVAILABLE = hasattr(F, 'scaled_dot_product_attention')
+
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
@@ -190,14 +193,19 @@ class MoaiAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_kv_groups)
         value_states = repeat_kv(value_states, self.num_kv_groups)
 
-        # Compute attention
+        # Compute attention (priority: Flash Attention > SDPA > Standard)
         if FLASH_ATTENTION_AVAILABLE and not output_attentions:
             # Use Flash Attention for efficient computation
             attn_output = self._flash_attention(
                 query_states, key_states, value_states, attention_mask, q_len
             )
+        elif SDPA_AVAILABLE and not output_attentions:
+            # Use PyTorch 2.0+ SDPA (memory efficient, no flash-attn required)
+            attn_output = self._sdpa_attention(
+                query_states, key_states, value_states, attention_mask, q_len
+            )
         else:
-            # Fallback to standard attention
+            # Fallback to standard attention (least efficient)
             attn_output = self._standard_attention(
                 query_states, key_states, value_states, attention_mask, output_attentions
             )
@@ -249,6 +257,59 @@ class MoaiAttention(nn.Module):
             causal=causal,
         )
 
+        return attn_output
+
+    def _sdpa_attention(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        q_len: int,
+    ) -> torch.Tensor:
+        """
+        Compute attention using PyTorch 2.0+ Scaled Dot Product Attention.
+        
+        This is memory-efficient (O(n) instead of O(n²)) and doesn't require
+        flash-attn installation. Works on all GPUs including consumer GPUs.
+
+        Args:
+            query: Query tensor (batch, num_heads, seq_len, head_dim)
+            key: Key tensor (batch, num_heads, seq_len, head_dim)
+            value: Value tensor (batch, num_heads, seq_len, head_dim)
+            attention_mask: Attention mask (optional)
+            q_len: Query sequence length
+
+        Returns:
+            Attention output tensor
+        """
+        # Determine if causal masking is needed
+        is_causal = q_len > 1 and attention_mask is None
+        
+        # SDPA expects attention_mask as (batch, 1, seq, seq) or None
+        # If we have a 4D mask, convert it to proper format for SDPA
+        attn_mask = None
+        if attention_mask is not None and not is_causal:
+            # attention_mask is additive (0 for attend, -inf for mask)
+            # SDPA expects the same format
+            attn_mask = attention_mask
+        
+        # Use PyTorch SDPA with memory efficient backend
+        with torch.nn.attention.sdpa_kernel([
+            torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
+            torch.nn.attention.SDPBackend.MATH,
+        ]):
+            attn_output = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=attn_mask,
+                dropout_p=self.attention_dropout if self.training else 0.0,
+                is_causal=is_causal,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+        
         return attn_output
 
     def _standard_attention(
