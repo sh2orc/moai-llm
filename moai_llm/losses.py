@@ -68,9 +68,9 @@ def chunked_cross_entropy_loss(
     if num_tokens <= chunk_size:
         return F.cross_entropy(logits, labels, ignore_index=ignore_index)
     
-    # Process in chunks
-    total_loss = 0.0
-    total_valid_tokens = 0
+    # Process in chunks (torch.compile compatible - no .item() calls)
+    total_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+    total_valid_tokens = torch.tensor(0, device=logits.device, dtype=torch.long)
     
     for start_idx in range(0, num_tokens, chunk_size):
         end_idx = min(start_idx + chunk_size, num_tokens)
@@ -78,27 +78,22 @@ def chunked_cross_entropy_loss(
         chunk_logits = logits[start_idx:end_idx]
         chunk_labels = labels[start_idx:end_idx]
         
-        # Count valid tokens in this chunk
+        # Count valid tokens in this chunk (keep as tensor for torch.compile)
         valid_mask = chunk_labels != ignore_index
-        num_valid = valid_mask.sum().item()
+        num_valid = valid_mask.sum()
         
-        if num_valid > 0:
-            # Compute cross-entropy for this chunk (reduction='sum')
-            chunk_loss = F.cross_entropy(
-                chunk_logits,
-                chunk_labels,
-                ignore_index=ignore_index,
-                reduction='sum'
-            )
-            total_loss = total_loss + chunk_loss
-            total_valid_tokens += num_valid
+        # Compute cross-entropy for this chunk (reduction='sum')
+        chunk_loss = F.cross_entropy(
+            chunk_logits,
+            chunk_labels,
+            ignore_index=ignore_index,
+            reduction='sum'
+        )
+        total_loss = total_loss + chunk_loss
+        total_valid_tokens = total_valid_tokens + num_valid
     
     # Average over all valid tokens
-    if total_valid_tokens > 0:
-        return total_loss / total_valid_tokens
-    else:
-        # No valid tokens, return zero loss
-        return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+    return total_loss / total_valid_tokens.clamp(min=1)
 
 
 class CrossEntropyLoss(nn.Module):
