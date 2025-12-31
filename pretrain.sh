@@ -29,8 +29,8 @@ case $CONFIG_SIZE in
                 GRADIENT_ACCUMULATION_STEPS=24  # effective = 4*4*24 = 384
                 ;;
             48)
-                BATCH_SIZE=12  # A40 48GB
-                GRADIENT_ACCUMULATION_STEPS=8   # effective = 12*4*8 = 384
+                BATCH_SIZE=16  # A40 48GB (increased from 12)
+                GRADIENT_ACCUMULATION_STEPS=4   # effective = 16*8*4 = 512 (8 GPUs)
                 ;;
             80)
                 BATCH_SIZE=24  # A100 80GB
@@ -99,8 +99,16 @@ if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
 fi
 export TOKENIZERS_PARALLELISM=false
 
-# NCCL settings (P2P 비활성화 - 혼합 GPU 환경이나 P2P 오류 시 필요) RTX 4090, 5090 
-export NCCL_P2P_DISABLE=1
+# NCCL settings
+# P2P 비활성화는 RTX 계열에서만 필요 (A40, A100 등 데이터센터 GPU는 P2P 지원)
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+if [[ "$GPU_NAME" == *"RTX"* ]] || [[ "$GPU_NAME" == *"GeForce"* ]]; then
+    echo "⚠️  Consumer GPU detected ($GPU_NAME) - Disabling P2P"
+    export NCCL_P2P_DISABLE=1
+else
+    echo "✓ Datacenter GPU detected ($GPU_NAME) - P2P enabled"
+    export NCCL_P2P_DISABLE=0
+fi
 
 # Memory optimization
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
