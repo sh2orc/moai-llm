@@ -17,16 +17,35 @@ set -e
 
 CONFIG_SIZE=${1:-2b}
 NUM_GPUS=${NUM_GPUS:-4}
+GPU_MEMORY=${GPU_MEMORY:-32}  # GPU memory in GB (32, 48, 80)
 
-# Model config based on size
+# Model config based on size and GPU memory
 case $CONFIG_SIZE in
     2b)
         MODEL_CONFIG="configs/model_config_2b.json"
-        BATCH_SIZE=4  # 2B model, 32GB GPU 한계
+        case $GPU_MEMORY in
+            32)
+                BATCH_SIZE=4   # RTX 5090 32GB
+                GRADIENT_ACCUMULATION_STEPS=24  # effective = 4*4*24 = 384
+                ;;
+            48)
+                BATCH_SIZE=12  # A40 48GB
+                GRADIENT_ACCUMULATION_STEPS=8   # effective = 12*4*8 = 384
+                ;;
+            80)
+                BATCH_SIZE=24  # A100 80GB
+                GRADIENT_ACCUMULATION_STEPS=4   # effective = 24*4*4 = 384
+                ;;
+            *)
+                BATCH_SIZE=4
+                GRADIENT_ACCUMULATION_STEPS=24
+                ;;
+        esac
         ;;
     5b)
         MODEL_CONFIG="configs/model_config.json"
         BATCH_SIZE=1
+        GRADIENT_ACCUMULATION_STEPS=96  # effective = 1*4*96 = 384
         ;;
     *)
         echo "Unknown config size: $CONFIG_SIZE (use 2b or 5b)"
@@ -36,7 +55,6 @@ esac
 
 # Common settings
 TOKENIZER_PATH="tokenizers/moai"
-GRADIENT_ACCUMULATION_STEPS=24  # effective batch = 4*4*24 = 384
 MAX_SEQ_LENGTH=1024
 LEARNING_RATE=1e-4
 WARMUP_STEPS=2000
@@ -106,6 +124,7 @@ for ds in "${DATASETS[@]}"; do
 done
 echo "========================================================================"
 echo "GPUs:                  $NUM_GPUS"
+echo "GPU Memory:            ${GPU_MEMORY}GB"
 echo "Batch Size (per GPU):  $BATCH_SIZE"
 echo "Gradient Accumulation: $GRADIENT_ACCUMULATION_STEPS"
 echo "Effective Batch Size:  $((BATCH_SIZE * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS))"

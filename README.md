@@ -49,8 +49,9 @@ A state-of-the-art 3B parameter language model based on Qwen3 architecture, feat
 - PyTorch 2.5+
 - CUDA 11.8+ (for GPU training)
 - GPU Options:
-  - **4× RTX 5090 32GB**: 2B model with vocab=128k (batch=8)
-  - **4× RTX 4090 24GB**: 2B model with vocab=64k (batch=4)
+  - **4× RTX 5090 32GB**: 2B model with vocab=92k (batch=4, effective=384)
+  - **4× A40 48GB**: 2B model with vocab=92k (batch=12, effective=384)
+  - **4× RTX 4090 24GB**: 2B model with vocab=64k (batch=2)
   - **8× A100 80GB**: Full 3B model (recommended for production)
 
 ### Install from Source
@@ -243,34 +244,38 @@ Effective Batch = BATCH_SIZE × NUM_GPUS × GRADIENT_ACCUMULATION_STEPS
 | 7B+ | 512 ~ 1024 | Large-scale training |
 | Research | 128 ~ 256 | Fast iteration |
 
-**Example Configurations (4× RTX 5090 32GB)**:
+**Example Configurations (2B model, vocab=92k)**:
 
-| BATCH_SIZE | GRAD_ACC | Effective Batch | Use Case |
-|------------|----------|-----------------|----------|
-| **8** | **12** | **384** | ✅ **Recommended (with SDPA)** |
-| 4 | 24 | 384 | Without SDPA / Flash Attention |
-| 4 | 16 | 256 | Stable, lower throughput |
+| GPU | BATCH_SIZE | GRAD_ACC | Effective Batch | Command |
+|-----|------------|----------|-----------------|---------|
+| **4× A100 80GB** | 24 | 4 | 384 | `GPU_MEMORY=80 ./pretrain.sh` |
+| **4× A40 48GB** | 12 | 8 | 384 | `GPU_MEMORY=48 ./pretrain.sh` |
+| **4× RTX 5090 32GB** | 4 | 24 | 384 | `GPU_MEMORY=32 ./pretrain.sh` |
 
-✅ **PyTorch SDPA** enables batch_size=8+ on 32GB GPUs (no flash-attn required!)
+⚠️ **GPU Memory Limits**:
+- 32GB: batch=4 (practical maximum with DDP overhead)
+- 48GB: batch=12 (3× throughput vs 32GB)
+- 80GB: batch=24 (6× throughput vs 32GB)
 
-**Memory Usage (2B model, vocab=128k, bf16, seq=1024)**:
+**Memory Usage (2B model, vocab=92k, bf16, seq=1024, DDP 4 GPUs)**:
 
 | Component | Memory | Notes |
 |-----------|--------|-------|
 | Model weights | ~4 GB | bf16 |
-| Optimizer (AdamW) | ~16 GB | fp32 states |
+| Optimizer (8-bit Adam) | ~4 GB | 8-bit states |
 | Gradients | ~4 GB | bf16 |
 | DDP buffers & overhead | ~6-7 GB | Multi-GPU sync |
-| **Fixed total** | **~30-31 GB** | |
-| Activations (batch=4) | ~1-2 GB | With gradient checkpointing |
-| Activations (batch=8) | ~2-3 GB | ✅ Works with SDPA! |
-| **Working total (batch=8)** | **~28-30 GB** | ✅ Comfortable with SDPA |
+| **Fixed total** | **~18-19 GB** | |
+| Activations (batch=4) | ~6-8 GB | With gradient checkpointing |
+| Logits + Loss | ~3-4 GB | vocab=92k |
+| **Working total (batch=4)** | **~28-30 GB** | ⚠️ Near 32GB limit |
 
 **Tips**:
-- For **2B model + vocab=92k** on 32GB GPU: use `BATCH_SIZE=8` (with SDPA)
-- **PyTorch SDPA** (built-in since 2.0) provides Flash Attention-like efficiency without extra installation
+- For **2B model + vocab=92k** on 32GB GPU: use `BATCH_SIZE=4` (practical limit)
+- **PyTorch SDPA** provides Flash Attention-like efficiency without flash-attn installation
+- **8-bit Adam** saves ~12GB optimizer memory (16GB → 4GB)
 - DDP overhead is significant (~6-7GB) - single GPU may allow larger batches
-- Chunked Cross-Entropy with `chunk_size=512` is essential for large vocab
+- Chunked Cross-Entropy with `chunk_size=2048` reduces peak memory
 - Always enable `--gradient_checkpointing` for memory savings
 
 ### Learning Rate Guide
@@ -421,8 +426,8 @@ loss_fn = create_loss_function({
 | 3 | Standard Attention | Fallback | O(N²) |
 
 **SDPA Benefits** (no extra installation required!):
-- **14x memory savings** on attention: 6.7GB → ~0.5GB (14 layers, seq=1024)
-- Enables **batch_size=8+** instead of batch_size=2
+- **Memory-efficient attention**: O(N) instead of O(N²)
+- Enables **batch_size=4** on 32GB GPUs (vs batch_size=2 without)
 - Automatically uses optimal kernel (Flash/Efficient/Math)
 - Works on all GPUs including consumer RTX cards
 
