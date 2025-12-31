@@ -85,8 +85,18 @@ done
 # Environment Setup
 # ============================================================================
 
-# CUDA settings
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3"}
+# CUDA settings - Generate GPU list based on NUM_GPUS
+if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+    GPU_LIST=""
+    for ((i=0; i<NUM_GPUS; i++)); do
+        if [ $i -eq 0 ]; then
+            GPU_LIST="$i"
+        else
+            GPU_LIST="$GPU_LIST,$i"
+        fi
+    done
+    export CUDA_VISIBLE_DEVICES="$GPU_LIST"
+fi
 export TOKENIZERS_PARALLELISM=false
 
 # NCCL settings (P2P 비활성화 - 혼합 GPU 환경이나 P2P 오류 시 필요) RTX 4090, 5090 
