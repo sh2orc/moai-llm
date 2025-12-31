@@ -53,14 +53,9 @@ class MoaiSwiGLU(nn.Module):
         Returns:
             Output tensor of shape (..., hidden_size)
         """
-        # Gate path: Swish(xW)
-        gate = F.silu(self.gate_proj(x))  # SiLU = Swish
-
-        # Up path: xV
-        up = self.up_proj(x)
-
-        # Element-wise product and down projection
-        return self.down_proj(gate * up)
+        # Fused gate and up: compute both in parallel, then combine
+        # This is more memory-efficient than storing intermediate results
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
     def extra_repr(self) -> str:
         return f"hidden_size={self.hidden_size}, intermediate_size={self.intermediate_size}"

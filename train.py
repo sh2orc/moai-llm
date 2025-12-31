@@ -489,10 +489,11 @@ def setup_model_and_tokenizer(
             logger.info(f"  Model dtype: {dtype_str}")
     
     # torch.compile 적용 (PyTorch 2.0+)
+    # Note: mode="default" is more stable with DDP than "reduce-overhead"
     if use_compile:
         try:
-            logger.info("🔧 Compiling model with torch.compile...")
-            model = torch.compile(model, mode="reduce-overhead")
+            logger.info("🔧 Compiling model with torch.compile (mode=default)...")
+            model = torch.compile(model, mode="default", dynamic=True)
             logger.info("✓ Model compiled successfully")
         except Exception as e:
             logger.warning(f"⚠️ torch.compile failed: {e}")

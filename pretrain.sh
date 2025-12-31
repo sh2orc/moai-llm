@@ -110,15 +110,25 @@ else
     export NCCL_P2P_DISABLE=0
 fi
 
-# Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# NCCL 추가 최적화
+export NCCL_ASYNC_ERROR_HANDLING=1  # 비동기 에러 처리
+export NCCL_IB_DISABLE=1            # InfiniBand 비활성화 (PCIe 환경)
+export NCCL_NET_GDR_LEVEL=0         # GPU Direct RDMA 비활성화 (호환성)
 
-# 추가 속도 최적화
+# Memory optimization
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
+
+# CUDA 최적화
+export CUDA_LAUNCH_BLOCKING=0       # 비동기 커널 실행
+export TORCH_CUDNN_V8_API_ENABLED=1 # cuDNN v8 API
+
+# CPU 최적화
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
 # TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)
 export NVIDIA_TF32_OVERRIDE=1
+export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
 
 # HuggingFace cache (optional)
 # export HF_HOME="/path/to/cache"

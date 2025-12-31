@@ -210,9 +210,8 @@ class MoaiAttention(nn.Module):
                 query_states, key_states, value_states, attention_mask, output_attentions
             )
 
-        # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        # Reshape and project output (single reshape for efficiency)
+        attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
         attn_weights = None  # Flash attention doesn't return weights
@@ -294,21 +293,16 @@ class MoaiAttention(nn.Module):
             # SDPA expects the same format
             attn_mask = attention_mask
         
-        # Use PyTorch SDPA with memory efficient backend
-        with torch.nn.attention.sdpa_kernel([
-            torch.nn.attention.SDPBackend.FLASH_ATTENTION,
-            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
-            torch.nn.attention.SDPBackend.MATH,
-        ]):
-            attn_output = F.scaled_dot_product_attention(
-                query,
-                key,
-                value,
-                attn_mask=attn_mask,
-                dropout_p=self.attention_dropout if self.training else 0.0,
-                is_causal=is_causal,
-                scale=1.0 / math.sqrt(self.head_dim),
-            )
+        # Use PyTorch SDPA - automatically selects best backend (Flash/Efficient/Math)
+        attn_output = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+            is_causal=is_causal,
+            scale=1.0 / math.sqrt(self.head_dim),
+        )
         
         return attn_output
 
