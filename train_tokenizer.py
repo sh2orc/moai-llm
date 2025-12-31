@@ -43,6 +43,36 @@
         --model_prefix moai_finance_bccard
 
 ----------------------------------------------------------
+    # Step 1: Kor Eng
+    python train_tokenizer.py \
+        --multilingual ko en \
+        --vocab_size 50000 \
+        --max_samples_per_lang 100000 \
+        --turbo \
+        --output_dir tokenizers/ \
+        --model_prefix moai_kor_eng
+
+    # Step 2: 금융 +16K → 66K
+    python train_tokenizer.py \
+        --base_tokenizer tokenizers/moai_kor_eng \
+        --dataset Mineru/kor-open-finance \
+        --vocab_size 66000 \
+        --max_samples 50000 \
+        --turbo \
+        --output_dir tokenizers/ \
+        --model_prefix moai_kor_eng_finance
+
+    # Step 3: 금융 +30K → 96K
+    python train_tokenizer.py \
+        --base_tokenizer tokenizers/moai_kor_eng_finance \
+        --dataset BCCard/BCAI-Finance-Kor \
+        --vocab_size 96000 \
+        --max_samples 200000 \
+        --turbo \
+        --output_dir tokenizers/ \
+        --model_prefix moai_kor_eng_finance_bccard
+
+----------------------------------------------------------
 
     # 로컬 txt 파일
     python train_tokenizer.py \
