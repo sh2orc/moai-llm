@@ -687,7 +687,7 @@ def train_sequential(args):
             args=training_args,
             train_dataset=tokenized_dataset,
             data_collator=data_collator,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,  # tokenizer deprecated in v5.0
         )
         
         logger.info(f"🏃 Training on dataset {idx+1}/{len(all_sources)}...")

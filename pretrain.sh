@@ -111,7 +111,7 @@ else
 fi
 
 # NCCL 추가 최적화
-export NCCL_ASYNC_ERROR_HANDLING=1  # 비동기 에러 처리
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # 비동기 에러 처리 (NCCL_ASYNC_ERROR_HANDLING is deprecated)
 export NCCL_IB_DISABLE=1            # InfiniBand 비활성화 (PCIe 환경)
 export NCCL_NET_GDR_LEVEL=0         # GPU Direct RDMA 비활성화 (호환성)
 
