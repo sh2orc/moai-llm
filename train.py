@@ -63,7 +63,11 @@ from transformers import (
     TrainingArguments,
     DataCollatorForLanguageModeling,
 )
-from datasets import load_dataset
+from datasets import load_dataset, disable_caching
+import datasets
+
+# Enable memory-efficient settings for large datasets
+datasets.config.IN_MEMORY_MAX_SIZE = 0  # Force memory mapping (no in-memory)
 
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.model import MoaiForCausalLM
@@ -231,7 +235,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
         batch_size=1000,
         num_proc=min(8, os.cpu_count() or 4),
         remove_columns=train_data.column_names,
-        load_from_cache_file=False,
+        load_from_cache_file=True,  # Use cache to avoid re-tokenizing
         desc=f"Converting {dataset_name}",
     )
     
@@ -595,7 +599,7 @@ def train_sequential(args):
                 batch_size=1000,
                 num_proc=args.num_proc,
                 remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,
+                load_from_cache_file=True,  # Use cache to avoid re-tokenizing
                 desc="Tokenizing",
             )
             
@@ -633,7 +637,7 @@ def train_sequential(args):
                 batch_size=1000,
                 num_proc=args.num_proc,
                 remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,
+                load_from_cache_file=True,  # Use cache to avoid re-tokenizing
                 desc="Tokenizing",
             )
         
@@ -784,7 +788,7 @@ def train(args):
             batch_size=1000,
             num_proc=args.num_proc,
             remove_columns=dataset["train"].column_names,
-            load_from_cache_file=False,
+            load_from_cache_file=True,  # Use cache to avoid re-tokenizing
             desc="Tokenizing",
         )
         
@@ -824,7 +828,7 @@ def train(args):
             batch_size=1000,
             num_proc=args.num_proc,
             remove_columns=dataset["train"].column_names,
-            load_from_cache_file=False,
+            load_from_cache_file=True,  # Use cache to avoid re-tokenizing
             desc="Tokenizing",
         )
 
