@@ -346,9 +346,78 @@ Effective Batch = BATCH_SIZE × NUM_GPUS × GRADIENT_ACCUMULATION_STEPS
 | 7B | 1e-4 ~ 2e-4 | 5e-6 ~ 2e-5 |
 | 13B+ | 5e-5 ~ 1e-4 | 1e-6 ~ 1e-5 |
 
-**Warmup Steps**:
-- Typically 1-5% of total training steps
-- 2000 steps is a good default for most cases
+### Learning Rate Schedule (Warmup → Decay)
+
+HuggingFace Trainer uses **linear warmup** followed by **linear decay** by default.
+This is why `learning_rate` in logs starts low and gradually increases!
+
+```
+Learning Rate (LR)
+        │
+  1e-4  │                     ╭───────────────────────────╮
+        │                   ╱                               ╲
+        │                 ╱          Training                 ╲
+        │               ╱           (learning)                  ╲
+        │             ╱                                           ╲
+  5e-5  │           ╱                                               ╲
+        │         ╱                                                   ╲
+        │       ╱                                                       ╲
+  5e-7  │     ╱ ← You are here (warmup phase)                            ╲
+        │   ╱                                                              ╲
+    0   │─╱──────────────────────────────────────────────────────────────────╲─→
+        └────────────────────────────────────────────────────────────────────────
+           0     2000                    steps                              end
+              (warmup)              (stable training)                    (decay)
+```
+
+**Three Phases**:
+
+| Phase | Steps | Learning Rate | Purpose |
+|-------|-------|---------------|---------|
+| 🔥 **Warmup** | 0 → 2000 | 0 → 1e-4 (↑ linear) | Prevent early instability |
+| 📚 **Training** | 2000 → ~end | 1e-4 (peak) | Main learning phase |
+| 📉 **Decay** | ~end → end | 1e-4 → 0 (↓ linear) | Smooth convergence |
+
+**Example Log (During Warmup)**:
+```python
+# Step ~100 (early warmup - you are here!)
+{'loss': 390.26, 'learning_rate': 4.5e-07, 'epoch': 0.01}
+#                               ↑ This is NORMAL!
+#                                 LR is still warming up to 1e-4
+
+# Step 2000 (warmup complete)
+{'loss': 5.23, 'learning_rate': 1e-04, 'epoch': 0.10}
+#                              ↑ Target LR reached!
+
+# Step 10000 (training)
+{'loss': 2.15, 'learning_rate': 9.5e-05, 'epoch': 0.50}
+#                               ↑ Slightly lower (decay started)
+```
+
+**Schedule Options**:
+```bash
+# Default (recommended for pretrain)
+--warmup_steps 2000
+--lr_scheduler_type linear
+
+# Cosine decay (smoother, popular for fine-tuning)
+--lr_scheduler_type cosine
+
+# Constant LR (no warmup, no decay)
+--warmup_steps 0
+--lr_scheduler_type constant
+```
+
+**Why Warmup is Important**:
+1. Training starts with **random weights** → **huge gradients**
+2. High LR at start → **unstable updates** (loss explosion 💥)
+3. Warmup gives model time to **find stable region** before full learning
+
+**Warmup Guidelines**:
+- Typical: **1-5% of total training steps**
+- Default: **2000 steps** (good for most cases)
+- Large datasets: up to 5000 steps
+- Small datasets: 500-1000 steps
 
 ### Loss Configuration
 

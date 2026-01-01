@@ -498,7 +498,7 @@ def setup_model_and_tokenizer(
     # 모델
     if pretrained_model:
         logger.info(f"🔄 Loading pretrained model: {pretrained_model}")
-        model = MoaiForCausalLM.from_pretrained(pretrained_model, torch_dtype=dtype)
+        model = MoaiForCausalLM.from_pretrained(pretrained_model, dtype=dtype)
         logger.info(f"  Model dtype: {dtype_str}")
     else:
         logger.info("🆕 Creating new model from config")
@@ -724,10 +724,23 @@ def train_sequential(args):
         logger.info(f"🏃 Training on dataset {idx+1}/{len(all_sources)}...")
         trainer.train()
         
-        # 5. 체크포인트 저장
+        # 5. 체크포인트 저장 (DDP 환경에서 동기화 필요)
         checkpoint_path = f"{stage_output_dir}/checkpoint"
         trainer.save_model(checkpoint_path)
-        logger.info(f"💾 Saved checkpoint to: {checkpoint_path}")
+        
+        # DDP 환경에서 모든 rank가 저장 완료될 때까지 대기
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        
+        # 저장 확인 (rank 0에서)
+        is_main_process = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+        if is_main_process:
+            saved_files = list(Path(checkpoint_path).glob("*.safetensors")) + \
+                         list(Path(checkpoint_path).glob("*.bin"))
+            if saved_files:
+                logger.info(f"💾 Saved checkpoint to: {checkpoint_path}")
+            else:
+                logger.warning(f"⚠️  No model files found in: {checkpoint_path}")
         
         # 다음 라운드를 위해 체크포인트 경로 업데이트
         current_checkpoint = checkpoint_path
@@ -740,10 +753,13 @@ def train_sequential(args):
         gc.collect()
         
         try:
-            import torch
             torch.cuda.empty_cache()
         except:
             pass
+        
+        # DDP barrier (다음 단계 시작 전 동기화)
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
         
         logger.info(f"✅ Completed dataset {idx+1}/{len(all_sources)}")
     
