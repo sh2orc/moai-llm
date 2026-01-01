@@ -100,7 +100,8 @@ if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
     done
     export CUDA_VISIBLE_DEVICES="$GPU_LIST"
 fi
-export TOKENIZERS_PARALLELISM=false
+# Use tokenizers' internal Rust parallelism (shared memory, no process duplication)
+export TOKENIZERS_PARALLELISM=true
 
 # NCCL settings
 # P2P 비활성화는 RTX 계열에서만 필요 (A40, A100 등 데이터센터 GPU는 P2P 지원)
