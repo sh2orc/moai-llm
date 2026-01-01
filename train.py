@@ -310,64 +310,71 @@ def load_pretrain_dataset(
 
 def _convert_to_text(item: dict) -> Optional[str]:
     """
-    다양한 데이터 형식을 텍스트로 변환 (pretrain용)
+    다양한 데이터 형식을 순수 텍스트로 변환 (Foundation Model pretrain용)
+    
+    특수 토큰 없이 모든 컬럼을 하나의 연속된 텍스트로 합칩니다.
+    이것은 Next Token Prediction을 위한 Foundation Model 학습 방식입니다.
     
     지원 형식:
         - {"text": "..."}: 그대로 사용
-        - {"input": "...", "output": "..."}: Chat 형식으로 변환
-        - {"instruction": "...", "output": "..."}: Chat 형식으로 변환
-        - {"messages": [...]}: Chat 형식으로 변환
-        - {"conversations": [...]}: Chat 형식으로 변환
+        - {"input": "...", "output": "..."}: 순수 텍스트로 합침
+        - {"instruction": "...", "output": "..."}: 순수 텍스트로 합침
+        - {"messages": [...]}: 모든 메시지 순수 텍스트로 합침
+        - {"conversations": [...]}: 모든 대화 순수 텍스트로 합침
     """
     # text 필드가 있으면 그대로 사용
     if "text" in item:
         return item["text"]
     
-    # input/output 포맷
+    # input/output 포맷 → 순수 텍스트
     if "input" in item and "output" in item:
-        text = f"<|im_start|>user\n{item['input']}<|im_end|>\n"
-        text += f"<|im_start|>assistant\n{item['output']}<|im_end|>"
-        return text
+        inp = item["input"].strip()
+        out = item["output"].strip()
+        return f"{inp}\n\n{out}" if inp else out
     
-    # instruction/output 포맷 (Alpaca)
+    # instruction/output 포맷 (Alpaca) → 순수 텍스트
     if "instruction" in item and "output" in item:
-        text = f"<|im_start|>user\n{item['instruction']}<|im_end|>\n"
-        text += f"<|im_start|>assistant\n{item['output']}<|im_end|>"
-        return text
+        inst = item["instruction"].strip()
+        out = item["output"].strip()
+        # input 필드도 있으면 합침
+        if item.get("input"):
+            inst = f"{inst}\n{item['input'].strip()}"
+        return f"{inst}\n\n{out}" if inst else out
     
-    # messages 포맷 (OpenAI Chat)
+    # messages 포맷 (OpenAI Chat) → 순수 텍스트
     if "messages" in item:
-        text = ""
+        texts = []
         for msg in item["messages"]:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            text += f"<|im_start|>{role}\n{content}<|im_end|>\n"
-        return text.strip()
+            content = msg.get("content", "").strip()
+            if content:
+                texts.append(content)
+        return "\n\n".join(texts)
     
-    # conversations 포맷 (ShareGPT)
+    # conversations 포맷 (ShareGPT) → 순수 텍스트
     if "conversations" in item:
-        text = ""
+        texts = []
         for conv in item["conversations"]:
-            role = "user" if conv.get("from") == "human" else "assistant"
-            value = conv.get("value", "")
-            text += f"<|im_start|>{role}\n{value}<|im_end|>\n"
-        return text.strip()
+            value = conv.get("value", "").strip()
+            if value:
+                texts.append(value)
+        return "\n\n".join(texts)
     
-    # DeepSeek R1 스타일 (input/content/reasoning_content)
+    # DeepSeek R1 스타일 (input/content/reasoning_content) → 순수 텍스트
     if "input" in item and "content" in item:
-        text = f"<|im_start|>user\n{item['input']}<|im_end|>\n"
-        # reasoning_content가 있으면 먼저 추가
+        parts = []
+        if item.get("input"):
+            parts.append(item["input"].strip())
         if item.get("reasoning_content"):
-            text += f"<|im_start|>assistant\n<think>\n{item['reasoning_content']}\n</think>\n{item['content']}<|im_end|>"
-        else:
-            text += f"<|im_start|>assistant\n{item['content']}<|im_end|>"
-        return text
+            parts.append(item["reasoning_content"].strip())
+        if item.get("content"):
+            parts.append(item["content"].strip())
+        return "\n\n".join(parts)
     
-    # prompt/response 포맷
+    # prompt/response 포맷 → 순수 텍스트
     if "prompt" in item and "response" in item:
-        text = f"<|im_start|>user\n{item['prompt']}<|im_end|>\n"
-        text += f"<|im_start|>assistant\n{item['response']}<|im_end|>"
-        return text
+        prompt = item["prompt"].strip()
+        response = item["response"].strip()
+        return f"{prompt}\n\n{response}" if prompt else response
     
     # question/answer 포맷
     if "question" in item and "answer" in item:
