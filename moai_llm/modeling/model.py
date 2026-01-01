@@ -383,12 +383,12 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             
-            # Use chunked cross-entropy for memory efficiency (32GB GPU compatible)
+            # Use chunked cross-entropy for memory efficiency
             from moai_llm.losses import chunked_cross_entropy_loss
             loss = chunked_cross_entropy_loss(
                 shift_logits,
                 shift_labels,
-                chunk_size=1024,  # Small chunk for 32GB GPU
+                chunk_size=4096,  # Larger chunk for faster computation
                 ignore_index=-100,
             )
 

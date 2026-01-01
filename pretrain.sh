@@ -111,9 +111,14 @@ else
 fi
 
 # NCCL 추가 최적화
-export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # 비동기 에러 처리 (NCCL_ASYNC_ERROR_HANDLING is deprecated)
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # 비동기 에러 처리
 export NCCL_IB_DISABLE=1            # InfiniBand 비활성화 (PCIe 환경)
 export NCCL_NET_GDR_LEVEL=0         # GPU Direct RDMA 비활성화 (호환성)
+
+# NCCL Timeout 설정 (chunked CE + gradient checkpointing으로 인한 느린 연산 대응)
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800  # 30분 (기본 480초)
+export NCCL_TIMEOUT=1800                       # 30분
+export TORCH_DISTRIBUTED_DEBUG=OFF             # 디버그 비활성화 (성능)
 
 # Memory optimization
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
