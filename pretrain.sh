@@ -104,13 +104,14 @@ fi
 export TOKENIZERS_PARALLELISM=true
 
 # NCCL settings
-# P2P 비활성화는 RTX 계열에서만 필요 (A40, A100 등 데이터센터 GPU는 P2P 지원)
+# P2P 비활성화: RTX 계열 + A40 (A40은 P2P 이슈 있음)
+# A100, H100 등은 P2P 지원
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-if [[ "$GPU_NAME" == *"RTX"* ]] || [[ "$GPU_NAME" == *"GeForce"* ]]; then
-    echo "⚠️  Consumer GPU detected ($GPU_NAME) - Disabling P2P"
+if [[ "$GPU_NAME" == *"RTX"* ]] || [[ "$GPU_NAME" == *"GeForce"* ]] || [[ "$GPU_NAME" == *"A40"* ]]; then
+    echo "⚠️  P2P disabled for: $GPU_NAME"
     export NCCL_P2P_DISABLE=1
 else
-    echo "✓ Datacenter GPU detected ($GPU_NAME) - P2P enabled"
+    echo "✓ P2P enabled for: $GPU_NAME"
     export NCCL_P2P_DISABLE=0
 fi
 
