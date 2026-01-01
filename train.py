@@ -228,8 +228,8 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     converted = train_data.map(
         convert_batch,
         batched=True,
-        batch_size=5000,  # Increased for less overhead
-        num_proc=min(16, os.cpu_count() or 4),
+        batch_size=1000,
+        num_proc=min(8, os.cpu_count() or 4),
         remove_columns=train_data.column_names,
         load_from_cache_file=False,
         desc=f"Converting {dataset_name}",
@@ -592,10 +592,10 @@ def train_sequential(args):
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
-                batch_size=5000,  # Increased for less overhead
+                batch_size=1000,
                 num_proc=args.num_proc,
                 remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,  # Skip cache check
+                load_from_cache_file=False,
                 desc="Tokenizing",
             )
             
@@ -630,7 +630,7 @@ def train_sequential(args):
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
-                batch_size=5000,
+                batch_size=1000,
                 num_proc=args.num_proc,
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=False,
@@ -781,10 +781,10 @@ def train(args):
         tokenized_ds = dataset["train"].map(
             batch_tokenize,
             batched=True,
-            batch_size=5000,  # Increased for less overhead
+            batch_size=1000,
             num_proc=args.num_proc,
             remove_columns=dataset["train"].column_names,
-            load_from_cache_file=False,  # Skip cache check
+            load_from_cache_file=False,
             desc="Tokenizing",
         )
         
@@ -821,7 +821,7 @@ def train(args):
         tokenized_dataset = dataset["train"].map(
             tokenize_function,
             batched=True,
-            batch_size=5000,
+            batch_size=1000,
             num_proc=args.num_proc,
             remove_columns=dataset["train"].column_names,
             load_from_cache_file=False,
