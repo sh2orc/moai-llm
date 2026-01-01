@@ -380,13 +380,17 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
-            # Use reshape instead of contiguous().view() for efficiency
-            vocab_size = logits.size(-1)
-            shift_logits = logits[..., :-1, :].reshape(-1, vocab_size)
-            shift_labels = labels[..., 1:].reshape(-1).to(shift_logits.device)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
             
-            # Direct cross-entropy (fastest method)
-            loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
+            # Use chunked cross-entropy for memory efficiency (32GB GPU compatible)
+            from moai_llm.losses import chunked_cross_entropy_loss
+            loss = chunked_cross_entropy_loss(
+                shift_logits,
+                shift_labels,
+                chunk_size=1024,  # Small chunk for 32GB GPU
+                ignore_index=-100,
+            )
 
         if not return_dict:
             output = (logits,) + outputs[1:]
