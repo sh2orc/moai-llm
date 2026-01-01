@@ -195,7 +195,7 @@ torchrun \
     --packing \
     --sequential \
     --flash_attention \
-    --num_proc 8 \
+    --num_proc 4 \
     --dataloader_num_workers 8 \
     --logging_steps 10 \
     --save_steps 500 \
