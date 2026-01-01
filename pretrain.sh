@@ -74,7 +74,6 @@ DATASETS=(
     "sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft"
     "nvidia/Nemotron-CC-Math-v1"
     "nvidia/OpenCodeGeneticInstruct"
-    "nvidia/Nemotron-CC-Math-v1"
     "BCCard/BCAI-Finance-Kor-1862K"
     "HAERAE-HUB/KOREAN-WEBTEXT"
 )
