@@ -322,71 +322,91 @@ def _convert_to_text(item: dict) -> Optional[str]:
         - {"messages": [...]}: 모든 메시지 순수 텍스트로 합침
         - {"conversations": [...]}: 모든 대화 순수 텍스트로 합침
     """
+    # 안전한 문자열 추출 함수
+    def safe_str(val) -> str:
+        return (val or "").strip()
+    
     # text 필드가 있으면 그대로 사용
-    if "text" in item:
+    if "text" in item and item["text"]:
         return item["text"]
     
     # input/output 포맷 → 순수 텍스트
     if "input" in item and "output" in item:
-        inp = item["input"].strip()
-        out = item["output"].strip()
+        inp = safe_str(item["input"])
+        out = safe_str(item["output"])
+        if not out:
+            return None
         return f"{inp}\n\n{out}" if inp else out
     
     # instruction/output 포맷 (Alpaca) → 순수 텍스트
     if "instruction" in item and "output" in item:
-        inst = item["instruction"].strip()
-        out = item["output"].strip()
+        inst = safe_str(item["instruction"])
+        out = safe_str(item["output"])
         # input 필드도 있으면 합침
-        if item.get("input"):
-            inst = f"{inst}\n{item['input'].strip()}"
+        inp = safe_str(item.get("input"))
+        if inp:
+            inst = f"{inst}\n{inp}" if inst else inp
+        if not inst and not out:
+            return None
         return f"{inst}\n\n{out}" if inst else out
     
     # messages 포맷 (OpenAI Chat) → 순수 텍스트
-    if "messages" in item:
+    if "messages" in item and item["messages"]:
         texts = []
         for msg in item["messages"]:
-            content = msg.get("content", "").strip()
-            if content:
-                texts.append(content)
-        return "\n\n".join(texts)
+            if msg:
+                content = safe_str(msg.get("content"))
+                if content:
+                    texts.append(content)
+        return "\n\n".join(texts) if texts else None
     
     # conversations 포맷 (ShareGPT) → 순수 텍스트
-    if "conversations" in item:
+    if "conversations" in item and item["conversations"]:
         texts = []
         for conv in item["conversations"]:
-            value = conv.get("value", "").strip()
-            if value:
-                texts.append(value)
-        return "\n\n".join(texts)
+            if conv:
+                value = safe_str(conv.get("value"))
+                if value:
+                    texts.append(value)
+        return "\n\n".join(texts) if texts else None
     
     # DeepSeek R1 스타일 (input/content/reasoning_content) → 순수 텍스트
     if "input" in item and "content" in item:
         parts = []
-        if item.get("input"):
-            parts.append(item["input"].strip())
-        if item.get("reasoning_content"):
-            parts.append(item["reasoning_content"].strip())
-        if item.get("content"):
-            parts.append(item["content"].strip())
-        return "\n\n".join(parts)
+        inp = safe_str(item.get("input"))
+        reasoning = safe_str(item.get("reasoning_content"))
+        content = safe_str(item.get("content"))
+        if inp:
+            parts.append(inp)
+        if reasoning:
+            parts.append(reasoning)
+        if content:
+            parts.append(content)
+        return "\n\n".join(parts) if parts else None
     
     # prompt/response 포맷 → 순수 텍스트
     if "prompt" in item and "response" in item:
-        prompt = item["prompt"].strip()
-        response = item["response"].strip()
+        prompt = safe_str(item["prompt"])
+        response = safe_str(item["response"])
+        if not response:
+            return None
         return f"{prompt}\n\n{response}" if prompt else response
     
-    # question/answer 포맷
+    # question/answer 포맷 → 순수 텍스트
     if "question" in item and "answer" in item:
-        text = f"<|im_start|>user\n{item['question']}<|im_end|>\n"
-        text += f"<|im_start|>assistant\n{item['answer']}<|im_end|>"
-        return text
+        question = safe_str(item["question"])
+        answer = safe_str(item["answer"])
+        if not answer:
+            return None
+        return f"{question}\n\n{answer}" if question else answer
     
-    # prompt/completion 포맷
+    # prompt/completion 포맷 → 순수 텍스트
     if "prompt" in item and "completion" in item:
-        text = f"<|im_start|>user\n{item['prompt']}<|im_end|>\n"
-        text += f"<|im_start|>assistant\n{item['completion']}<|im_end|>"
-        return text
+        prompt = safe_str(item["prompt"])
+        completion = safe_str(item["completion"])
+        if not completion:
+            return None
+        return f"{prompt}\n\n{completion}" if prompt else completion
     
     # 알 수 없는 형식
     logger.warning(f"Unknown format, skipping: {list(item.keys())}")
