@@ -388,7 +388,7 @@ class MoaiForCausalLM(MoaiPreTrainedModel, GenerationMixin):
             loss = chunked_cross_entropy_loss(
                 shift_logits,
                 shift_labels,
-                chunk_size=4096,  # Larger chunk for faster computation
+                chunk_size=2048,  # Balanced speed/memory
                 ignore_index=-100,
             )
 

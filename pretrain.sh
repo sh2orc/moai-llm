@@ -71,6 +71,9 @@ OUTPUT_DIR="outputs/pretrain-korean-instruction-${CONFIG_SIZE}"
 # config가 필요한 경우: "dataset_name:config_name" 형식 사용
 DATASETS=(
     "sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft"
+    "nvidia/Nemotron-CC-Math-v1"
+    "nvidia/OpenCodeGeneticInstruct"
+    "nvidia/Nemotron-CC-Math-v1"
     "BCCard/BCAI-Finance-Kor-1862K"
     "HAERAE-HUB/KOREAN-WEBTEXT"
 )
