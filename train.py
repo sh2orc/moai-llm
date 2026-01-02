@@ -948,6 +948,8 @@ def train_sequential(args):
                         tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
                         # Fast Tokenizer는 내부적으로 병렬화되므로 num_proc=1이 최적!
+                        # TOKENIZERS_PARALLELISM을 true로 강제 설정 (datasets가 false로 바꾸는 것 방지)
+                        os.environ["TOKENIZERS_PARALLELISM"] = "true"
                         logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
@@ -1005,6 +1007,8 @@ def train_sequential(args):
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
             else:
                 # 단일 프로세스: 일반 토크나이징
+                # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                os.environ["TOKENIZERS_PARALLELISM"] = "true"
                 logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                 tokenized_ds = dataset["train"].map(
                     batch_tokenize,
@@ -1063,6 +1067,8 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
+                        # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                        os.environ["TOKENIZERS_PARALLELISM"] = "true"
                         logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
@@ -1120,6 +1126,8 @@ def train_sequential(args):
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
             else:
                 # 단일 프로세스: 일반 토크나이징
+                # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                os.environ["TOKENIZERS_PARALLELISM"] = "true"
                 logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                 tokenized_dataset = dataset["train"].map(
                     tokenize_function,
@@ -1341,6 +1349,8 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
+                    # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                    os.environ["TOKENIZERS_PARALLELISM"] = "true"
                     logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
@@ -1398,6 +1408,8 @@ def train(args):
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
         else:
             # 단일 프로세스: 일반 토크나이징
+            # TOKENIZERS_PARALLELISM을 true로 강제 설정
+            os.environ["TOKENIZERS_PARALLELISM"] = "true"
             logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
@@ -1457,6 +1469,8 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
+                    # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                    os.environ["TOKENIZERS_PARALLELISM"] = "true"
                     logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
@@ -1514,6 +1528,8 @@ def train(args):
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
         else:
             # 단일 프로세스: 일반 토크나이징
+            # TOKENIZERS_PARALLELISM을 true로 강제 설정
+            os.environ["TOKENIZERS_PARALLELISM"] = "true"
             logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
