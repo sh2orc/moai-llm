@@ -72,17 +72,13 @@ OUTPUT_DIR="outputs/pretrain-korean-instruction-${CONFIG_SIZE}"
 DATASETS=(
     "BCCard/BCCard-Finance-Kor-QnA"
     "sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft"
-    "nvidia/Nemotron-CC-Math-v1"
+    "nvidia/Nemotron-CC-Math-v1:3"
     "nvidia/OpenCodeGeneticInstruct"
     "BCCard/BCAI-Finance-Kor-1862K"
     "HAERAE-HUB/KOREAN-WEBTEXT"
 )
 
-# 데이터셋을 공백으로 구분된 문자열로 변환
-DATASET_ARGS=""
-for ds in "${DATASETS[@]}"; do
-    DATASET_ARGS="$DATASET_ARGS $ds"
-done
+# 데이터셋 배열은 그대로 사용 (문자열 변환 불필요)
 
 # ============================================================================
 # Environment Setup
@@ -177,12 +173,22 @@ echo "========================================================================"
 # Run Training
 # ============================================================================
 
+# Debug: print command
+echo "DEBUG: Running command:"
+echo "torchrun --nproc_per_node=$NUM_GPUS --master_port=29500 train.py \\"
+echo "  --mode pretrain \\"
+echo "  --dataset ${DATASETS[*]} \\"
+echo "  --tokenizer_path $TOKENIZER_PATH \\"
+echo "  --model_config $MODEL_CONFIG \\"
+echo "  --output_dir $OUTPUT_DIR \\"
+echo "  ..."
+
 torchrun \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     train.py \
     --mode pretrain \
-    --dataset $DATASET_ARGS \
+    --dataset "${DATASETS[@]}" \
     --tokenizer_path $TOKENIZER_PATH \
     --model_config $MODEL_CONFIG \
     --output_dir $OUTPUT_DIR \

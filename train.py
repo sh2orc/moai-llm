@@ -196,7 +196,15 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     데이터셋 이름에 config를 포함할 수 있음:
         - "dataset_name:config_name" 형식 지원
         - 예: "maywell/korean_textbooks:claude_evol"
+    
+    DDP 환경에서는 rank 0만 데이터셋을 다운로드하고, 다른 프로세스는 대기합니다.
     """
+    # DDP 환경 확인
+    is_distributed = torch.distributed.is_initialized() if hasattr(torch.distributed, 'is_initialized') else False
+    is_main_process = True
+    if is_distributed:
+        is_main_process = torch.distributed.get_rank() == 0
+    
     # dataset_name:config_name 형식 파싱
     if ":" in dataset_name:
         dataset_name, config_from_name = dataset_name.split(":", 1)
@@ -205,11 +213,20 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     
     logger.info(f"  Loading HuggingFace: {dataset_name}")
     
+    # DDP 환경에서는 rank 0만 다운로드
+    if is_distributed and not is_main_process:
+        # 다른 프로세스는 rank 0이 다운로드 완료할 때까지 대기
+        torch.distributed.barrier()
+    
     if dataset_config:
         logger.info(f"    Config: {dataset_config}")
         raw_dataset = load_dataset(dataset_name, dataset_config)
     else:
         raw_dataset = load_dataset(dataset_name)
+    
+    # rank 0이 다운로드 완료한 후 다른 프로세스도 진행
+    if is_distributed and is_main_process:
+        torch.distributed.barrier()
     
     # train split 사용
     train_data = raw_dataset.get("train", raw_dataset)
