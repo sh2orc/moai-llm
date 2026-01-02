@@ -1835,9 +1835,13 @@ def main():
             args.sequential = True
             print("⚡ Automatically enabling --sequential mode for tokenization")
         
-        # 환경 변수 설정 (단일 프로세스이므로 full parallelism)
+        # 핵심: 단일 프로세스로 Fast Tokenizer 사용
+        # num_proc=1 → datasets가 TOKENIZERS_PARALLELISM=false 설정 안함
+        # TOKENIZERS_PARALLELISM=true → Fast Tokenizer 내부 병렬화 활성화
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         os.environ["RAYON_NUM_THREADS"] = str(os.cpu_count() or 96)
+        os.environ["DATASET_NUM_PROC"] = "1"  # 핵심! 단일 프로세스로 변환
+        print(f"⚡ DATASET_NUM_PROC=1 + TOKENIZERS_PARALLELISM=true + RAYON_NUM_THREADS={os.cpu_count()}")
         
         # train_sequential 호출 (토큰화 부분만 실행됨)
         print("🚀 Calling train_sequential for tokenization...")

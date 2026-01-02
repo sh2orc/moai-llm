@@ -278,7 +278,16 @@ echo ""
 echo "========================================================================"
 echo "🔥 STEP 1: Pre-tokenizing all datasets (before DDP)"
 echo "========================================================================"
+echo "⚡ Tokenization settings:"
+echo "  - DATASET_NUM_PROC=1 (single process for Fast Tokenizer)"
+echo "  - TOKENIZERS_PARALLELISM=true (Rust parallelism enabled)"
+echo "  - RAYON_NUM_THREADS=96 (full CPU utilization)"
+echo ""
 
+# 핵심: tokenize_only 단계에서는 단일 프로세스 사용!
+DATASET_NUM_PROC=1 \
+TOKENIZERS_PARALLELISM=true \
+RAYON_NUM_THREADS=96 \
 python3 train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \

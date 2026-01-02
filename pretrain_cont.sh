@@ -156,8 +156,6 @@ echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
 # ============================================================================
 # Rust 토크나이저 병렬화 활성화 (중요!)
 export TOKENIZERS_PARALLELISM=true
-export RAYON_NUM_THREADS=96  # Rust 병렬 처리 스레드 수 (전체 CPU 사용)
-export MKL_NUM_THREADS=96
 
 # Python 멀티프로세싱 최적화
 export PYTHONUNBUFFERED=1
@@ -174,7 +172,6 @@ echo "⚡ Sequential Mode Optimization:"
 echo "  - Fast Tokenizer: ENABLED (Rust-based)"
 echo "  - Strategy: Pre-tokenize ALL datasets BEFORE DDP"
 echo "  - Mode: Single process + Fast Tokenizer threading"
-echo "  - CPUs: 96 cores (RAYON_NUM_THREADS=96)"
 echo "  - Batch size: 50000 (optimized for speed)"
 echo "  - Writer batch: 100000 (optimized I/O)"
 echo "  - Cache reuse: ENABLED"
@@ -279,7 +276,14 @@ echo ""
 echo "========================================================================"
 echo "🔥 STEP 1: Pre-tokenizing all datasets (before DDP)"
 echo "========================================================================"
+echo "⚡ Tokenization settings:"
+echo "  - DATASET_NUM_PROC=1 (single process for Fast Tokenizer)"
+echo "  - TOKENIZERS_PARALLELISM=true (Rust parallelism enabled)"
+echo ""
 
+# 핵심: tokenize_only 단계에서는 단일 프로세스 사용!
+DATASET_NUM_PROC=1 \
+TOKENIZERS_PARALLELISM=true \
 python3 train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \
