@@ -424,7 +424,9 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
     # 환경 변수로 조정 가능한 최적화 파라미터
-    dataset_num_proc = int(os.getenv("DATASET_NUM_PROC", min(8, os.cpu_count() or 2)))
+    # DATASET_NUM_PROC=0 또는 1 → None (fork 없이 단일 스레드로 실행, Fast Tokenizer 병렬화 유지)
+    _num_proc_env = int(os.getenv("DATASET_NUM_PROC", min(8, os.cpu_count() or 2)))
+    dataset_num_proc = None if _num_proc_env <= 1 else _num_proc_env
     dataset_batch_size = int(os.getenv("DATASET_BATCH_SIZE", 1000))
     dataset_writer_batch_size = int(os.getenv("DATASET_WRITER_BATCH_SIZE", 10000))
     
@@ -438,7 +440,8 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         
         if is_main_process:
             # rank 0만 데이터셋 변환 (멀티프로세스로 빠르게)
-            logger.info(f"    [Rank 0] Converting dataset with {dataset_num_proc} processes "
+            _proc_str = "single thread (no fork)" if dataset_num_proc is None else f"{dataset_num_proc} processes"
+            logger.info(f"    [Rank 0] Converting dataset with {_proc_str} "
                        f"(batch_size={dataset_batch_size}, writer_batch_size={dataset_writer_batch_size})...")
             converted = train_data.map(
                 convert_batch,
@@ -552,7 +555,8 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             
     else:
         # 단일 프로세스 환경
-        logger.info(f"    Converting dataset with {dataset_num_proc} processes...")
+        _proc_str = "single thread (no fork)" if dataset_num_proc is None else f"{dataset_num_proc} processes"
+        logger.info(f"    Converting dataset with {_proc_str}...")
         converted = train_data.map(
             convert_batch,
             batched=True,
@@ -1037,7 +1041,7 @@ def train_sequential(args):
                         batch_tokenize,
                         batched=True,
                         batch_size=50000,
-                        num_proc=1,  # ⚡ 단일 프로세스 + Fast Tokenizer 병렬화
+                        num_proc=None,  # ⚡ None = 단일 스레드, fork 없음!
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
                         writer_batch_size=100000,
@@ -1080,7 +1084,7 @@ def train_sequential(args):
                         tokenize_function,
                         batched=True,
                         batch_size=50000,
-                        num_proc=1,  # ⚡ 단일 프로세스 + Fast Tokenizer 병렬화
+                        num_proc=None,  # ⚡ None = 단일 스레드, fork 없음!
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
                         writer_batch_size=100000,
