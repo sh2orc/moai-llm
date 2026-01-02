@@ -964,59 +964,55 @@ def train_sequential(args):
     sys.stdout.flush()
     
     # ========================================================================
-    # STEP 2: 모든 데이터셋을 먼저 토큰화 (DDP 전! multiprocessing 사용!)
+    # STEP 2: 모든 데이터셋을 먼저 토큰화 (DDP 전! Rank 0만 실행!)
     # ========================================================================
-    if is_main_process:
-        logger.info("="*80)
-        logger.info("⚡ STEP 2: Pre-tokenizing all datasets (before DDP)")
-        logger.info("="*80)
-    sys.stdout.flush()
-    
     tokenized_datasets_info = []  # 각 데이터셋의 정보 저장
     
-    for idx, (src_type, src_name) in enumerate(all_sources):
-        if is_main_process:
-            logger.info(f"")
-            logger.info(f"📦 [{idx+1}/{len(all_sources)}] Dataset: {src_name}")
+    # ⚡ Rank 0만 토큰화 수행, 다른 Rank는 완전히 대기
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("⚡ STEP 2: Pre-tokenizing all datasets (Rank 0 only, before DDP)")
+        logger.info("="*80)
         sys.stdout.flush()
         
-        # 데이터셋 로드
-        if is_main_process:
+        for idx, (src_type, src_name) in enumerate(all_sources):
+            logger.info(f"")
+            logger.info(f"📦 [{idx+1}/{len(all_sources)}] Dataset: {src_name}")
+            sys.stdout.flush()
+            
+            # 데이터셋 로드
             logger.info(f"  Loading dataset...")
-        
-        if src_type == "hf":
-            dataset, text_column = load_pretrain_dataset(
-                dataset_names=[src_name],
-                dataset_config=args.dataset_config if idx == 0 else None,
-                train_files=None,
-                text_column=args.text_column,
-            )
-        else:
-            dataset, text_column = load_pretrain_dataset(
-                dataset_names=None,
-                dataset_config=None,
-                train_files=[src_name],
-                text_column=args.text_column,
-            )
-        
-        # 토큰화 (Rank 0만)
-        cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-        dataset_hash = hashlib.md5(f"{src_name}_seq_{idx}".encode()).hexdigest()[:16]
-        tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
-        tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
-        
-        from datasets import Dataset as HFDataset
-        
-        if tokenized_cache_path.exists() and tokenized_marker.exists():
-            # 캐시가 있으면 모든 rank가 로드
-            if is_main_process:
+            
+            if src_type == "hf":
+                dataset, text_column = load_pretrain_dataset(
+                    dataset_names=[src_name],
+                    dataset_config=args.dataset_config if idx == 0 else None,
+                    train_files=None,
+                    text_column=args.text_column,
+                )
+            else:
+                dataset, text_column = load_pretrain_dataset(
+                    dataset_names=None,
+                    dataset_config=None,
+                    train_files=[src_name],
+                    text_column=args.text_column,
+                )
+            
+            # 토큰화 캐시 경로
+            cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+            dataset_hash = hashlib.md5(f"{src_name}_seq_{idx}".encode()).hexdigest()[:16]
+            tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+            tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+            
+            from datasets import Dataset as HFDataset
+            
+            if tokenized_cache_path.exists() and tokenized_marker.exists():
+                # 캐시가 있으면 로드만
                 logger.info(f"  ✅ Loading cached tokenized dataset")
-            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-            if is_main_process:
+                tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
-        else:
-            # 캐시가 없으면 Rank 0만 토큰화, 나머지는 대기
-            if is_main_process:
+            else:
+                # 캐시가 없으면 토큰화
                 logger.info(f"  🔤 Tokenizing with multiprocessing...")
                 
                 if args.packing:
@@ -1096,40 +1092,82 @@ def train_sequential(args):
                 tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
                 tokenized_marker.touch()
                 logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples")
-            else:
-                # 다른 rank는 마커 대기
-                import time as time_module
-                max_wait = 7200
-                waited = 0
-                logger.info(f"  [Rank {rank}] Waiting for rank 0 to tokenize...")
-                while not tokenized_marker.exists() and waited < max_wait:
-                    time_module.sleep(5)
-                    waited += 5
-                    if waited % 60 == 0:
-                        logger.info(f"  [Rank {rank}] Still waiting... ({waited}s)")
-                
-                if not tokenized_marker.exists():
-                    raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {max_wait}s")
-                
-                logger.info(f"  [Rank {rank}] Loading tokenized dataset...")
-                tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-                logger.info(f"  [Rank {rank}] ✅ Loaded {len(tokenized_dataset):,} samples")
+            
+            # 정보 저장
+            tokenized_datasets_info.append({
+                'name': src_name,
+                'cache_path': tokenized_cache_path,
+                'num_samples': len(tokenized_dataset),
+            })
+            
+            # 메모리 해제
+            del dataset
+            del tokenized_dataset
+            gc.collect()
         
-        # 정보 저장
-        tokenized_datasets_info.append({
-            'name': src_name,
-            'cache_path': tokenized_cache_path,
-            'num_samples': len(tokenized_dataset),
-        })
-        
-        del dataset
-        gc.collect()
-    
-    if is_main_process:
         logger.info("="*80)
         logger.info("✅ All datasets pre-tokenized!")
         logger.info("="*80)
-    sys.stdout.flush()
+        sys.stdout.flush()
+    else:
+        # 다른 Rank들은 Rank 0이 모든 토큰화를 완료할 때까지 대기
+        logger.info(f"[Rank {rank}] Waiting for rank 0 to complete all tokenization...")
+        sys.stdout.flush()
+        
+        # 마지막 데이터셋의 마커를 기다림
+        import time as time_module
+        cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        last_src_name = all_sources[-1][1]
+        last_idx = len(all_sources) - 1
+        dataset_hash = hashlib.md5(f"{last_src_name}_seq_{last_idx}".encode()).hexdigest()[:16]
+        last_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+        
+        max_wait = 7200
+        waited = 0
+        while not last_marker.exists() and waited < max_wait:
+            time_module.sleep(10)
+            waited += 10
+            if waited % 60 == 0:
+                logger.info(f"[Rank {rank}] Still waiting... ({waited}s)")
+        
+        if not last_marker.exists():
+            raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {max_wait}s")
+        
+        logger.info(f"[Rank {rank}] ✅ Rank 0 completed tokenization! Loading datasets...")
+        sys.stdout.flush()
+        
+        # 토큰화된 데이터셋 정보 로드
+        from datasets import Dataset as HFDataset
+        for idx, (src_type, src_name) in enumerate(all_sources):
+            cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+            dataset_hash = hashlib.md5(f"{src_name}_seq_{idx}".encode()).hexdigest()[:16]
+            tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+            
+            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+            
+            tokenized_datasets_info.append({
+                'name': src_name,
+                'cache_path': tokenized_cache_path,
+                'num_samples': len(tokenized_dataset),
+            })
+            
+            del tokenized_dataset
+            gc.collect()
+        
+        logger.info(f"[Rank {rank}] ✅ All dataset info loaded!")
+        sys.stdout.flush()
+    
+    # ========================================================================
+    # Barrier: 모든 Rank 동기화 (토큰화 완료 후)
+    # ========================================================================
+    if is_distributed:
+        import torch.distributed as dist
+        if dist.is_initialized():
+            logger.info(f"[Rank {rank}] Synchronizing with other ranks...")
+            sys.stdout.flush()
+            dist.barrier()
+            logger.info(f"[Rank {rank}] ✅ All ranks synchronized!")
+            sys.stdout.flush()
     
     # ========================================================================
     # STEP 3: W&B 초기화 (선택적)
