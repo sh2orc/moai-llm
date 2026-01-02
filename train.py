@@ -242,6 +242,13 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     
     logger.info(f"  Loading HuggingFace: {dataset_name}")
     
+    # 메모리 최적화 옵션 - 메모리 맵 파일 사용 (메모리 절약)
+    load_kwargs = {
+        "keep_in_memory": False,  # 디스크에 메모리 맵 파일로 유지
+    }
+    if dataset_config:
+        load_kwargs["name"] = dataset_config
+    
     # DDP 환경에서는 rank 0만 데이터셋을 다운로드 및 변환
     if is_distributed:
         # barrier는 distributed가 완전히 초기화된 후에만 사용
@@ -258,9 +265,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             logger.info(f"    [Rank 0] Downloading dataset...")
             if dataset_config:
                 logger.info(f"    Config: {dataset_config}")
-                raw_dataset = load_dataset(dataset_name, dataset_config)
-            else:
-                raw_dataset = load_dataset(dataset_name)
+            raw_dataset = load_dataset(dataset_name, **load_kwargs)
             logger.info(f"    [Rank 0] Dataset download completed")
             
             # 다운로드 완료 후 barrier (가능한 경우)
@@ -282,17 +287,16 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             
             # barrier 통과 후 캐시된 데이터셋 로드 (다운로드 없이)
             logger.info(f"    [Rank {current_rank}] Loading cached dataset...")
-            if dataset_config:
-                raw_dataset = load_dataset(dataset_name, dataset_config, download_mode="reuse_cache_if_exists")
-            else:
-                raw_dataset = load_dataset(dataset_name, download_mode="reuse_cache_if_exists")
+            raw_dataset = load_dataset(
+                dataset_name, 
+                download_mode="reuse_cache_if_exists",
+                **load_kwargs
+            )
     else:
         # 단일 프로세스 환경
         if dataset_config:
             logger.info(f"    Config: {dataset_config}")
-            raw_dataset = load_dataset(dataset_name, dataset_config)
-        else:
-            raw_dataset = load_dataset(dataset_name)
+        raw_dataset = load_dataset(dataset_name, **load_kwargs)
     
     # train split 사용
     train_data = raw_dataset.get("train", raw_dataset)
@@ -312,79 +316,133 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         return {"text": texts}
     
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
-    # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 대기하여 캐시 파일 충돌 방지
+    # 환경 변수로 조정 가능한 최적화 파라미터
+    dataset_num_proc = int(os.getenv("DATASET_NUM_PROC", min(8, os.cpu_count() or 2)))
+    dataset_batch_size = int(os.getenv("DATASET_BATCH_SIZE", 1000))
+    dataset_writer_batch_size = int(os.getenv("DATASET_WRITER_BATCH_SIZE", 10000))
+    
+    # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 캐시만 로드
     if is_distributed:
-        # 모든 프로세스가 변환 시작 전에 동기화
-        try:
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
-        except (RuntimeError, ValueError, AttributeError):
-            pass
+        # 캐시 완료 마커 파일 경로 생성
+        import hashlib
+        from pathlib import Path
+        cache_home = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        config_str = f"{dataset_name}_{dataset_config}" if dataset_config else dataset_name
+        cache_hash = hashlib.md5(config_str.encode()).hexdigest()[:16]
+        cache_marker = Path(cache_home) / "datasets" / f".{cache_hash}_converted.marker"
         
         if is_main_process:
-            # rank 0만 데이터셋 변환 (캐시 파일 쓰기)
-            # 단일 프로세스로 변환하여 캐시 파일 충돌 방지
-            logger.info(f"    [Rank 0] Converting dataset...")
+            # rank 0만 데이터셋 변환 (멀티프로세스로 빠르게)
+            logger.info(f"    [Rank 0] Converting dataset with {dataset_num_proc} processes "
+                       f"(batch_size={dataset_batch_size}, writer_batch_size={dataset_writer_batch_size})...")
             converted = train_data.map(
                 convert_batch,
                 batched=True,
-                batch_size=500,
-                num_proc=1,  # 단일 프로세스로 변환 (캐시 파일 충돌 방지)
+                batch_size=dataset_batch_size,
+                num_proc=dataset_num_proc,
                 remove_columns=train_data.column_names,
                 load_from_cache_file=True,
+                writer_batch_size=dataset_writer_batch_size,
+                keep_in_memory=False,  # 메모리 맵 파일 사용
                 desc=f"Converting {dataset_name}",
             )
-            logger.info(f"    [Rank 0] Dataset conversion completed")
             
-            # 변환 완료 후 barrier (다른 프로세스가 진행하도록)
+            # 빈 텍스트 필터링 (병렬 처리)
+            filter_num_proc = min(dataset_num_proc // 2, 4)
+            logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
+            converted = converted.filter(
+                lambda x: len(x["text"]) > 0, 
+                num_proc=filter_num_proc,
+                writer_batch_size=dataset_writer_batch_size,
+                keep_in_memory=False,
+            )
+            
+            logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
+            
+            # 완료 마커 파일 생성
+            cache_marker.parent.mkdir(parents=True, exist_ok=True)
+            cache_marker.touch()
+            logger.info(f"    [Rank 0] Created completion marker: {cache_marker}")
+            
+            # 변환 완료 후 barrier
             try:
                 if torch.distributed.is_initialized():
                     torch.distributed.barrier()
             except (RuntimeError, ValueError, AttributeError):
                 import time
                 time.sleep(1)
+                
         else:
-            # 다른 프로세스는 rank 0이 변환 완료할 때까지 대기
-            logger.info(f"    [Rank {current_rank}] Waiting for dataset conversion...")
+            # 다른 프로세스는 마커 파일 생성 대기 (map 실행 안 함!)
+            logger.info(f"    [Rank {current_rank}] Waiting for rank 0 conversion...")
+            import time
+            max_wait_time = 3600  # 최대 1시간 대기
+            waited = 0
+            check_interval = 5
+            
+            while not cache_marker.exists() and waited < max_wait_time:
+                time.sleep(check_interval)
+                waited += check_interval
+                if waited % 60 == 0:  # 1분마다 로그
+                    logger.info(f"    [Rank {current_rank}] Still waiting... ({waited}s elapsed)")
+            
+            if not cache_marker.exists():
+                raise TimeoutError(f"Rank {current_rank}: Dataset conversion timeout after {max_wait_time}s")
+            
+            logger.info(f"    [Rank {current_rank}] Marker detected, loading cached dataset...")
+            
+            # barrier 동기화
             try:
                 if torch.distributed.is_initialized():
                     torch.distributed.barrier()
             except (RuntimeError, ValueError, AttributeError):
-                import time
-                # rank 0이 변환을 완료할 충분한 시간 대기
-                time.sleep(10)
+                time.sleep(2)
             
-            # barrier 통과 후 캐시된 데이터셋 로드 (변환 없이, 읽기 전용)
-            logger.info(f"    [Rank {current_rank}] Loading cached converted dataset...")
-            # 캐시가 완성되었는지 확인하기 위해 짧은 대기
-            import time
-            time.sleep(2)
-            
+            # 이미 변환된 데이터셋을 캐시에서만 로드 (map 재실행하지만 캐시 히트)
+            # 동일한 변환 함수와 파라미터를 사용하여 캐시 키가 일치하도록 함
             converted = train_data.map(
                 convert_batch,
                 batched=True,
-                batch_size=500,
-                num_proc=1,  # 단일 프로세스로 캐시 읽기만
+                batch_size=dataset_batch_size,
+                num_proc=1,  # 캐시 히트만 하므로 단일 프로세스
                 remove_columns=train_data.column_names,
-                load_from_cache_file=True,  # 캐시에서만 로드
-                desc=f"Loading cached {dataset_name}",
+                load_from_cache_file=True,  # 반드시 캐시에서만 로드
+                writer_batch_size=dataset_writer_batch_size,
+                keep_in_memory=False,
+                desc=f"[Rank {current_rank}] Loading from cache",
             )
+            
+            converted = converted.filter(
+                lambda x: len(x["text"]) > 0, 
+                num_proc=1,
+                writer_batch_size=dataset_writer_batch_size,
+                keep_in_memory=False,
+            )
+            
+            logger.info(f"    [Rank {current_rank}] Loaded from cache: {len(converted):,} samples")
+            
     else:
         # 단일 프로세스 환경
+        logger.info(f"    Converting dataset with {dataset_num_proc} processes...")
         converted = train_data.map(
             convert_batch,
             batched=True,
-            batch_size=500,
-            num_proc=min(4, os.cpu_count() or 2),
+            batch_size=dataset_batch_size,
+            num_proc=dataset_num_proc,
             remove_columns=train_data.column_names,
             load_from_cache_file=True,
+            writer_batch_size=dataset_writer_batch_size,
+            keep_in_memory=False,
             desc=f"Converting {dataset_name}",
         )
-    
-    # 빈 텍스트 필터링 (단일 프로세스로 변경 - 버퍼 공간 부족 방지)
-    # 병렬 필터링은 프로세스 간 통신 버퍼를 많이 사용하므로 단일 프로세스 사용
-    # TOKENIZERS_PARALLELISM=true가 설정되어 있어 Rust 레벨에서 병렬화됨
-    converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=1)
+        
+        filter_num_proc = min(dataset_num_proc // 2, 4)
+        converted = converted.filter(
+            lambda x: len(x["text"]) > 0, 
+            num_proc=filter_num_proc,
+            writer_batch_size=dataset_writer_batch_size,
+            keep_in_memory=False,
+        )
     
     # Dataset 객체를 그대로 반환 (메모리 효율적)
     # 리스트 변환을 피하고 Dataset을 직접 사용하여 메모리 사용량 최소화

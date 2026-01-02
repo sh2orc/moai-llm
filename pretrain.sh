@@ -132,6 +132,21 @@ export TORCH_CUDNN_V8_API_ENABLED=1 # cuDNN v8 API
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
+# ============================================================================
+# Dataset Loading Optimization (대규모 데이터셋 최적화)
+# ============================================================================
+# 병렬 처리 프로세스 수 (기본: min(8, CPU count))
+export DATASET_NUM_PROC=${DATASET_NUM_PROC:-8}
+# 데이터 변환 배치 크기 (기본: 1000, 클수록 빠르지만 메모리 많이 사용)
+export DATASET_BATCH_SIZE=${DATASET_BATCH_SIZE:-1000}
+# 디스크 쓰기 배치 크기 (기본: 10000, 클수록 I/O 효율 향상)
+export DATASET_WRITER_BATCH_SIZE=${DATASET_WRITER_BATCH_SIZE:-10000}
+
+echo "📊 Dataset loading settings:"
+echo "  - Parallel processes: $DATASET_NUM_PROC"
+echo "  - Batch size: $DATASET_BATCH_SIZE"
+echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
+
 # TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)
 export NVIDIA_TF32_OVERRIDE=1
 export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
