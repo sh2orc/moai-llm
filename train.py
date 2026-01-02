@@ -49,11 +49,21 @@ python train.py \
 # Early debug print
 import os
 import sys
+import time as time_module
 
 # Check rank early
 rank = int(os.environ.get("RANK", 0))
+world_size = int(os.environ.get("WORLD_SIZE", 1))
+
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Script started, importing modules...", flush=True)
+    print(f"[DEBUG] Rank 0: Script started (world_size={world_size})", flush=True)
+    print(f"[DEBUG] Rank 0: Importing basic modules...", flush=True)
+else:
+    # 다른 rank들은 rank 0이 초기화 완료할 때까지 약간 대기
+    time_module.sleep(2 + rank * 0.5)  # Rank별로 약간씩 지연
+    print(f"[DEBUG] Rank {rank}: Starting after delay...", flush=True)
+
+sys.stdout.flush()
 
 import argparse
 import hashlib
@@ -73,14 +83,16 @@ except ImportError:
     psutil = None  # Optional dependency
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Importing torch... (may take 10-30s with 8 GPUs)", flush=True)
+    print(f"[DEBUG] Rank 0: Importing torch...", flush=True)
     sys.stdout.flush()
+
 import torch
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Torch imported successfully!", flush=True)
-    print(f"[DEBUG] Rank {rank}: Importing transformers...", flush=True)
+    print(f"[DEBUG] Rank 0: ✓ Torch imported", flush=True)
+    print(f"[DEBUG] Rank 0: Importing transformers...", flush=True)
     sys.stdout.flush()
+
 from transformers import (
     AutoTokenizer,
     Trainer,
@@ -89,33 +101,36 @@ from transformers import (
 )
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Transformers imported!", flush=True)
-    print(f"[DEBUG] Rank {rank}: Importing datasets...", flush=True)
+    print(f"[DEBUG] Rank 0: ✓ Transformers imported", flush=True)
+    print(f"[DEBUG] Rank 0: Importing datasets...", flush=True)
     sys.stdout.flush()
+
 from datasets import load_dataset, disable_caching
 import datasets
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Datasets imported!", flush=True)
-    print(f"[DEBUG] Rank {rank}: Configuring datasets...", flush=True)
+    print(f"[DEBUG] Rank 0: ✓ Datasets imported", flush=True)
     sys.stdout.flush()
+
 # Enable memory-efficient settings for large datasets
 datasets.config.IN_MEMORY_MAX_SIZE = 0  # Force memory mapping (no in-memory)
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Importing moai_llm...", flush=True)
+    print(f"[DEBUG] Rank 0: Importing moai_llm...", flush=True)
     sys.stdout.flush()
+
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.model import MoaiForCausalLM
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Moai_llm imported!", flush=True)
-    print(f"[DEBUG] Rank {rank}: Setting up logging...", flush=True)
+    print(f"[DEBUG] Rank 0: ✓ Moai_llm imported", flush=True)
     sys.stdout.flush()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: ✅ All imports complete!", flush=True)
+    print(f"[DEBUG] Rank 0: ✅ All imports complete!", flush=True)
     sys.stdout.flush()
 
 
