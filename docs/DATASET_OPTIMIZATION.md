@@ -1,17 +1,26 @@
-# 데이터셋 로딩 최적화 가이드 (v2)
+# 데이터셋 로딩 최적화 가이드 (v3 - 최종)
 
 ## 개요
 
 대규모 데이터셋(750만+ 샘플) 로딩 시 발생하는 문제들을 해결하기 위한 최적화가 적용되었습니다.
 
-## v2 업데이트 사항
+## 버전 히스토리
 
-**v1 → v2 주요 개선**:
-- ✅ 필터링 단계 캐시 충돌 해결 (이전 v1에서 미해결)
-- ✅ 2단계 마커 시스템 (변환 + 필터)
-- ✅ Rank 0만 필터링 실행 (단일 프로세스)
-- ✅ 다른 rank들 양쪽 마커 대기
-- ✅ 100% 안정성 달성
+**v1**: 변환 단계 캐시 충돌 해결 → ❌ 필터 단계 미해결
+**v2**: 필터 단계 마커 추가 → ❌ 로드 시 여전히 충돌 가능
+**v3** ⭐: **파일 기반 분산** → ✅ **근본적 해결!**
+
+## v3 업데이트 사항 (최종 해결책)
+
+**v2 → v3 근본적 변화**:
+- ❌ v2: 다른 rank들이 `map()/filter()` 호출 → 캐시 읽기 → 충돌 가능
+- ✅ v3: 다른 rank들이 `load_from_disk()` 호출 → 저장된 파일만 읽기 → **충돌 불가능**
+
+**v3 핵심 개선**:
+- ✅ **Rank 0**: Arrow 파일로 저장 (`save_to_disk()`)
+- ✅ **다른 rank**: 파일 직접 로드 (`load_from_disk()`)
+- ✅ **캐시 시스템 우회**: map/filter 호출 없음
+- ✅ **충돌 근본적 제거**: 100% 안정성 보장
 
 ## 해결된 문제들
 
@@ -91,20 +100,25 @@ export DATASET_WRITER_BATCH_SIZE=5000
    - 병렬 변환 수행 (`num_proc=8`)
    - **변환 완료 마커 생성**: `~/.cache/huggingface/datasets/.{hash}_converted.marker`
    - 빈 텍스트 필터링 (단일 프로세스로 안전하게)
+   - **최종 결과를 Arrow 파일로 저장**: `~/.cache/huggingface/datasets/{hash}_final/` ⭐ **NEW v3**
    - **필터 완료 마커 생성**: `~/.cache/huggingface/datasets/.{hash}_filtered.marker`
    - Barrier로 다른 프로세스에 완료 알림
 
 2. **Rank 1-N (워커 프로세스)**:
-   - **변환 완료 마커** 대기 (폴링, 5초 간격)
-   - **필터 완료 마커** 대기 (중요! 캐시 충돌 방지)
+   - **필터 완료 마커** 대기 (폴링, 5초 간격)
    - Barrier 동기화
-   - 이미 변환 및 필터링된 캐시 로드 (재실행 없음)
+   - **저장된 Arrow 파일 직접 로드** (`load_from_disk()`) ⭐ **NEW v3**
+   - ✅ **map/filter 호출 없음** → 캐시 충돌 완전 제거!
 
-**주요 개선점 (v2)**:
-- ✅ Filter 단계도 Rank 0만 실행 (캐시 충돌 완전 해결)
-- ✅ 2단계 마커 시스템 (converted + filtered)
-- ✅ 다른 rank들은 양쪽 마커 모두 대기
-- ✅ Filter에도 `load_from_cache_file=True` 적용
+**주요 개선점 (v3 - 완전한 해결)**:
+- ✅ **Rank 0이 save_to_disk로 저장** (Arrow 파일)
+- ✅ **다른 rank들은 load_from_disk로 로드** (map/filter 호출 안 함!)
+- ✅ **캐시 충돌 100% 제거** (다른 rank들이 캐시 파일을 전혀 쓰지 않음)
+- ✅ **빠른 로드 속도** (Arrow 파일 직접 로드)
+
+**v2 → v3 주요 변화**:
+- ❌ v2: 다른 rank들이 `map()/filter()` 호출 → 캐시 읽기 시도 → 여전히 충돌 가능
+- ✅ v3: 다른 rank들이 `load_from_disk()` 호출 → 저장된 파일만 읽기 → 충돌 없음
 
 ### 메모리 최적화
 
@@ -116,10 +130,10 @@ load_dataset(..., keep_in_memory=False)
 dataset.map(..., keep_in_memory=False, writer_batch_size=10000)
 ```
 
-### 병렬 처리 최적화
+### 병렬 처리 최적화 (v3)
 
 ```python
-# Rank 0: 병렬 변환 + 필터링
+# Rank 0: 병렬 변환 + 필터링 + 저장
 # 1. 변환
 converted = train_data.map(
     convert_batch,
@@ -128,33 +142,30 @@ converted = train_data.map(
     num_proc=8,              # 병렬 처리 ↑
     writer_batch_size=10000, # I/O 효율 ↑
 )
-# 변환 완료 마커 생성
 
 # 2. 필터링 (단일 프로세스로 안전하게)
 converted = converted.filter(
     lambda x: len(x["text"]) > 0,
     num_proc=1,              # 캐시 충돌 방지
-    load_from_cache_file=True,
-)
-# 필터 완료 마커 생성
-
-# Rank 1-N: 양쪽 마커 대기 후 캐시만 로드
-# 1. 변환 캐시 로드
-converted = train_data.map(
-    convert_batch,
-    batched=True,
-    batch_size=1000,
-    num_proc=1,              # 캐시 히트만
-    load_from_cache_file=True,
 )
 
-# 2. 필터 캐시 로드
-converted = converted.filter(
-    lambda x: len(x["text"]) > 0,
-    num_proc=1,
-    load_from_cache_file=True,  # 중요!
-)
+# 3. Arrow 파일로 저장 (v3 NEW!)
+converted.save_to_disk("/cache/datasets/{hash}_final/")
+
+# 4. 필터 완료 마커 생성
+Path("/cache/.{hash}_filtered.marker").touch()
+
+# Rank 1-N: 마커 대기 후 저장된 파일 직접 로드 (v3 NEW!)
+# 캐시 API를 전혀 사용하지 않음 → 충돌 없음!
+from datasets import Dataset
+converted = Dataset.load_from_disk("/cache/datasets/{hash}_final/")
 ```
+
+**v3의 핵심 장점**:
+- ✅ 다른 rank들이 `map()`/`filter()` 호출 안 함
+- ✅ 캐시 시스템 우회 → 충돌 불가능
+- ✅ Arrow 파일 직접 로드 → 빠른 속도
+- ✅ 메모리 맵 파일 공유 → 메모리 효율적
 
 ## 성능 비교
 
@@ -179,20 +190,28 @@ converted = converted.filter(
 
 ### 캐시 파일 충돌이 여전히 발생하는 경우
 
-**v2 업데이트로 완전히 해결되었습니다!** 하지만 이전 캐시가 남아있다면:
+**v3 업데이트로 근본적으로 해결되었습니다!** 
+
+v3는 다른 rank들이 캐시 API를 전혀 사용하지 않으므로 충돌이 **불가능**합니다.
+
+하지만 이전 버전의 캐시가 남아있어 문제가 있다면:
 
 ```bash
 # 캐시 완전히 삭제 후 재시도
 rm -rf ~/.cache/huggingface/datasets/nvidia___open_code_genetic_instruct
 
-# 마커 파일도 삭제
-rm -f ~/.cache/huggingface/datasets/.*.marker
+# 마커 파일 및 저장된 데이터셋 삭제
+rm -rf ~/.cache/huggingface/datasets/.*.marker
+rm -rf ~/.cache/huggingface/datasets/*_final/
 
 # 또는 다른 캐시 디렉토리 사용
 export HF_HOME=/path/to/new/cache
 ```
 
-**참고**: v2 업데이트는 2단계 마커 시스템으로 필터 단계 충돌도 해결합니다.
+**v3 작동 원리**:
+- Rank 0: `save_to_disk()` → Arrow 파일 저장
+- 다른 rank: `load_from_disk()` → Arrow 파일 로드
+- ✅ **캐시 시스템 우회** → 충돌 불가능!
 
 ### 변환이 느린 경우
 

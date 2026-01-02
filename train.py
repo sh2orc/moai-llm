@@ -250,6 +250,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         load_kwargs["name"] = dataset_config
     
     # DDP 환경에서는 rank 0만 데이터셋을 다운로드 및 변환
+    # 다른 rank들은 최종 변환 결과만 로드
     if is_distributed:
         # barrier는 distributed가 완전히 초기화된 후에만 사용
         try:
@@ -261,45 +262,27 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             pass
         
         if is_main_process:
-            # rank 0만 데이터셋 다운로드
+            # rank 0만 데이터셋 다운로드 및 변환
             logger.info(f"    [Rank 0] Downloading dataset...")
             if dataset_config:
                 logger.info(f"    Config: {dataset_config}")
             raw_dataset = load_dataset(dataset_name, **load_kwargs)
             logger.info(f"    [Rank 0] Dataset download completed")
             
-            # 다운로드 완료 후 barrier (가능한 경우)
-            try:
-                if torch.distributed.is_initialized():
-                    torch.distributed.barrier()
-            except (RuntimeError, ValueError, AttributeError):
-                pass
+            # train split 사용
+            train_data = raw_dataset.get("train", raw_dataset)
         else:
-            # 다른 프로세스는 rank 0이 다운로드 완료할 때까지 대기
-            logger.info(f"    [Rank {current_rank}] Waiting for dataset download...")
-            try:
-                if torch.distributed.is_initialized():
-                    torch.distributed.barrier()
-            except (RuntimeError, ValueError, AttributeError):
-                # barrier 실패 시 짧은 대기 후 진행 (rank 0이 다운로드 완료했을 것으로 가정)
-                import time
-                time.sleep(2)
-            
-            # barrier 통과 후 캐시된 데이터셋 로드 (다운로드 없이)
-            logger.info(f"    [Rank {current_rank}] Loading cached dataset...")
-            raw_dataset = load_dataset(
-                dataset_name, 
-                download_mode="reuse_cache_if_exists",
-                **load_kwargs
-            )
+            # 다른 프로세스는 나중에 최종 결과만 로드 (여기서는 아무것도 안 함)
+            logger.info(f"    [Rank {current_rank}] Waiting for rank 0 to complete processing...")
+            train_data = None  # 나중에 캐시에서 로드
     else:
         # 단일 프로세스 환경
         if dataset_config:
             logger.info(f"    Config: {dataset_config}")
         raw_dataset = load_dataset(dataset_name, **load_kwargs)
-    
-    # train split 사용
-    train_data = raw_dataset.get("train", raw_dataset)
+        
+        # train split 사용
+        train_data = raw_dataset.get("train", raw_dataset)
     
     # dataset.map()으로 빠르게 변환
     def convert_batch(examples):
@@ -364,6 +347,11 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             
             logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
             
+            # 최종 결과를 디스크에 저장 (다른 rank들이 안전하게 로드할 수 있도록)
+            dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
+            logger.info(f"    [Rank 0] Saving final dataset to: {dataset_save_path}")
+            converted.save_to_disk(str(dataset_save_path))
+            
             # 필터 완료 마커 생성
             filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
             filter_marker.touch()
@@ -378,39 +366,25 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 time.sleep(1)
                 
         else:
-            # 다른 프로세스는 마커 파일 생성 대기 (map/filter 실행 안 함!)
-            logger.info(f"    [Rank {current_rank}] Waiting for rank 0 conversion...")
+            # 다른 프로세스는 필터 마커 대기 후 최종 결과만 로드!
             import time
             max_wait_time = 3600  # 최대 1시간 대기
-            waited = 0
             check_interval = 5
             
-            # 변환 완료 마커 대기
-            while not cache_marker.exists() and waited < max_wait_time:
+            # 필터 완료 마커 대기 (변환 마커는 건너뛰고 바로 필터 마커만 확인)
+            filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
+            logger.info(f"    [Rank {current_rank}] Waiting for rank 0 to complete all processing...")
+            waited = 0
+            while not filter_marker.exists() and waited < max_wait_time:
                 time.sleep(check_interval)
                 waited += check_interval
                 if waited % 60 == 0:  # 1분마다 로그
-                    logger.info(f"    [Rank {current_rank}] Still waiting for conversion... ({waited}s elapsed)")
-            
-            if not cache_marker.exists():
-                raise TimeoutError(f"Rank {current_rank}: Dataset conversion timeout after {max_wait_time}s")
-            
-            logger.info(f"    [Rank {current_rank}] Conversion marker detected!")
-            
-            # 필터 완료 마커도 대기 (중요!)
-            filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
-            logger.info(f"    [Rank {current_rank}] Waiting for rank 0 filtering...")
-            filter_waited = 0
-            while not filter_marker.exists() and filter_waited < max_wait_time:
-                time.sleep(check_interval)
-                filter_waited += check_interval
-                if filter_waited % 60 == 0:
-                    logger.info(f"    [Rank {current_rank}] Still waiting for filter... ({filter_waited}s elapsed)")
+                    logger.info(f"    [Rank {current_rank}] Still waiting... ({waited}s elapsed)")
             
             if not filter_marker.exists():
-                raise TimeoutError(f"Rank {current_rank}: Dataset filtering timeout after {max_wait_time}s")
+                raise TimeoutError(f"Rank {current_rank}: Dataset processing timeout after {max_wait_time}s")
             
-            logger.info(f"    [Rank {current_rank}] Filter marker detected, loading cached dataset...")
+            logger.info(f"    [Rank {current_rank}] Processing complete, loading final result from cache...")
             
             # barrier 동기화
             try:
@@ -419,30 +393,17 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             except (RuntimeError, ValueError, AttributeError):
                 time.sleep(2)
             
-            # 이미 변환된 데이터셋을 캐시에서만 로드 (map 재실행하지만 캐시 히트)
-            # 동일한 변환 함수와 파라미터를 사용하여 캐시 키가 일치하도록 함
-            converted = train_data.map(
-                convert_batch,
-                batched=True,
-                batch_size=dataset_batch_size,
-                num_proc=1,  # 캐시 히트만 하므로 단일 프로세스
-                remove_columns=train_data.column_names,
-                load_from_cache_file=True,  # 반드시 캐시에서만 로드
-                writer_batch_size=dataset_writer_batch_size,
-                keep_in_memory=False,
-                desc=f"[Rank {current_rank}] Loading from cache",
-            )
+            # 추가 대기: rank 0의 파일 저장이 완전히 완료되도록
+            time.sleep(3)
             
-            # filter도 캐시에서만 로드 (재실행하지만 캐시 히트)
-            converted = converted.filter(
-                lambda x: len(x["text"]) > 0, 
-                num_proc=1,
-                load_from_cache_file=True,  # 캐시에서만 로드
-                writer_batch_size=dataset_writer_batch_size,
-                keep_in_memory=False,
-            )
+            # rank 0이 저장한 최종 데이터셋을 직접 로드 (캐시 충돌 없음!)
+            dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
+            logger.info(f"    [Rank {current_rank}] Loading final dataset from: {dataset_save_path}")
             
-            logger.info(f"    [Rank {current_rank}] Loaded from cache: {len(converted):,} samples")
+            from datasets import Dataset
+            converted = Dataset.load_from_disk(str(dataset_save_path))
+            
+            logger.info(f"    [Rank {current_rank}] Loaded from disk: {len(converted):,} samples")
             
     else:
         # 단일 프로세스 환경

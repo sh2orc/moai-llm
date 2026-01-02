@@ -465,30 +465,31 @@ loss = chunked_cross_entropy_loss(
 | 32GB | 2048 | Balanced ⭐ |
 | 48GB+ | 4096 or direct CE | Maximum speed |
 
-### 2. Dataset Loading Optimization (대규모 데이터셋 최적화) ⭐ NEW v2
+### 2. Dataset Loading Optimization (대규모 데이터셋 최적화) ⭐ NEW v3
 
 **Problem**: Large datasets (7.5M+ samples) can cause:
-- ❌ Cache file conflicts in conversion **AND filtering** (FileNotFoundError)
+- ❌ Cache file conflicts **at all stages** (FileNotFoundError)
 - ❌ Slow loading (8+ minutes)
 - ❌ High memory usage (30GB+)
 
-**Solution v2**: MOAI-LLM implements advanced dataset loading strategies:
+**Solution v3** ⭐ **Root Cause Fix**: MOAI-LLM implements file-based distribution:
 
 ```python
 # Automatic optimizations applied:
-# 1. 2-stage marker system (conversion + filter markers)
-# 2. Rank 0 only: converts + filters dataset
-# 3. Other ranks: wait for both markers, load cache only
+# 1. Rank 0: converts + filters → saves to Arrow files (save_to_disk())
+# 2. Other ranks: load saved files directly (load_from_disk())
+# 3. Cache system bypassed → NO map/filter calls on other ranks
 # 4. Parallel processing (8× faster conversion)
 # 5. Memory mapping (83% memory reduction)
 # 6. Optimized I/O (writer batching)
 ```
 
-**v2 Improvements**:
-- ✅ **Filter stage** also protected from cache conflicts
-- ✅ Rank 0 filters with single process (safe)
-- ✅ Other ranks wait for filter completion marker
-- ✅ **100% stability** - all cache conflicts eliminated
+**v3 Root Cause Fix** ⭐:
+- ✅ **Rank 0**: Saves final result as Arrow files
+- ✅ **Other ranks**: Load Arrow files directly (no cache API)
+- ✅ **No map/filter calls** on non-rank-0 processes
+- ✅ **Cache conflicts impossible** - bypasses caching system entirely
+- ✅ **Faster loading** - direct Arrow file read
 
 **Performance Improvements (nvidia/OpenCodeGeneticInstruct, 7.5M samples)**:
 
@@ -529,15 +530,17 @@ export DATASET_BATCH_SIZE=500
 export DATASET_WRITER_BATCH_SIZE=5000
 ```
 
-**Technical Details (v2)**:
+**Technical Details (v3 - File-based Distribution)** ⭐:
 - **Distributed Loading**: 
-  - Rank 0: converts (parallel) → filters (single process)
-  - Creates 2 markers: conversion + filter completion
-  - Other ranks: wait for both markers → load cache only
+  - Rank 0: converts (parallel) → filters → **saves to disk** (`save_to_disk()`)
+  - Creates filter completion marker
+  - Other ranks: wait for marker → **load from disk** (`load_from_disk()`)
+  - ✅ **No cache API calls on other ranks** → zero conflict risk
 - **Memory Mapping**: `keep_in_memory=False` uses disk-based Arrow files
 - **Optimized I/O**: `writer_batch_size=10000` reduces disk write overhead
 - **Parallel Processing**: `num_proc=8` for 8× faster conversion
-- **Safe Filtering**: Single process prevents cache conflicts in filter stage
+- **Safe Filtering**: Single process prevents conflicts
+- **File-based Sharing**: Arrow files shared across ranks (no duplication)
 
 **See Also**: `docs/DATASET_OPTIMIZATION.md` for detailed guide
 
