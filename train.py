@@ -1014,75 +1014,61 @@ def train_sequential(args):
                 logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
             else:
                 # 캐시가 없으면 토큰화
-                logger.info(f"  🔤 Tokenizing with CHUNK-based parallel processing...")
+                logger.info(f"  🔤 Tokenizing with BATCH ITERATOR...")
                 
                 if args.packing:
-                    import multiprocessing
-                    from concurrent.futures import ProcessPoolExecutor, as_completed
                     import time
                     
-                    cpu_count = multiprocessing.cpu_count()
-                    num_workers = min(48, cpu_count)
-                    
-                    # 데이터를 청크로 분할
                     train_data = dataset["train"]
                     total_samples = len(train_data)
-                    chunk_size = 100000  # 10만 개씩 처리
-                    num_chunks = (total_samples + chunk_size - 1) // chunk_size
+                    batch_size = 50000  # 5만 개씩 배치
                     
-                    logger.info(f"  ⚡ CHUNK-based Parallel Tokenization")
+                    logger.info(f"  ⚡ Batch Iterator Tokenization")
                     logger.info(f"     Total samples: {total_samples:,}")
-                    logger.info(f"     Chunk size: {chunk_size:,}")
-                    logger.info(f"     Number of chunks: {num_chunks}")
-                    logger.info(f"     Workers: {num_workers}")
-                    
-                    # 토크나이저 경로 저장 (프로세스 간 전달)
-                    tokenizer_path = args.tokenizer_path
+                    logger.info(f"     Batch size: {batch_size:,}")
+                    sys.stdout.flush()
                     
                     all_input_ids = []
                     start_time = time.time()
+                    samples_done = 0
                     
-                    # 청크별로 순차 처리 (메모리 효율적)
-                    for chunk_idx in range(num_chunks):
-                        chunk_start = chunk_idx * chunk_size
-                        chunk_end = min((chunk_idx + 1) * chunk_size, total_samples)
+                    # iter()를 사용하여 배치 단위로 빠르게 순회
+                    for batch in train_data.iter(batch_size=batch_size):
+                        texts = batch[text_column]
                         
-                        # 청크 데이터 추출
-                        chunk_texts = train_data[chunk_start:chunk_end][text_column]
-                        
-                        # 배치 토크나이징 (Fast Tokenizer는 배치에서 병렬 처리)
+                        # 배치 토크나이징 (Fast Tokenizer 내부 병렬 처리)
                         tokenized = tokenizer(
-                            chunk_texts,
+                            texts,
                             truncation=False,
                             padding=False,
                             add_special_tokens=True,
                         )
                         
                         all_input_ids.extend(tokenized["input_ids"])
+                        samples_done += len(texts)
                         
-                        # 진행률 출력
-                        elapsed = time.time() - start_time
-                        samples_done = chunk_end
-                        samples_per_sec = samples_done / elapsed if elapsed > 0 else 0
-                        eta = (total_samples - samples_done) / samples_per_sec if samples_per_sec > 0 else 0
-                        
-                        logger.info(f"  📦 Chunk {chunk_idx+1}/{num_chunks}: "
-                                   f"{samples_done:,}/{total_samples:,} "
-                                   f"({100*samples_done/total_samples:.1f}%) "
-                                   f"[{samples_per_sec:.0f} samples/s, ETA: {eta/60:.1f}min]")
-                        
-                        # 메모리 해제
-                        del chunk_texts, tokenized
-                        gc.collect()
+                        # 진행률 출력 (10만 개마다)
+                        if samples_done % 100000 == 0 or samples_done == total_samples:
+                            elapsed = time.time() - start_time
+                            samples_per_sec = samples_done / elapsed if elapsed > 0 else 0
+                            eta = (total_samples - samples_done) / samples_per_sec if samples_per_sec > 0 else 0
+                            
+                            logger.info(f"  📦 Progress: {samples_done:,}/{total_samples:,} "
+                                       f"({100*samples_done/total_samples:.1f}%) "
+                                       f"[{samples_per_sec:.0f} samples/s, ETA: {eta/60:.1f}min]")
+                            sys.stdout.flush()
                     
                     total_time = time.time() - start_time
                     logger.info(f"  ✅ Tokenization completed in {total_time/60:.1f} minutes")
                     logger.info(f"     Average speed: {total_samples/total_time:.0f} samples/s")
+                    sys.stdout.flush()
                     
                     # Packing
                     logger.info(f"  📦 Packing sequences...")
+                    sys.stdout.flush()
                     tokenized_list = [{"input_ids": ids} for ids in all_input_ids]
                     del all_input_ids
+                    gc.collect()
                     
                     concatenated_chunks = concatenate_sequences(
                         tokenized_sequences=tokenized_list,
@@ -1090,9 +1076,11 @@ def train_sequential(args):
                         eos_token_id=tokenizer.eos_token_id,
                     )
                     del tokenized_list
+                    gc.collect()
                     
                     tokenized_dataset = HFDataset.from_list(concatenated_chunks)
                     del concatenated_chunks
+                    gc.collect()
                 else:
                     def tokenize_function(examples):
                         return tokenizer(
