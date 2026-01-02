@@ -189,7 +189,7 @@ def _load_single_file(file_path: str) -> list:
     return formatted_data
 
 
-def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) -> list:
+def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     """
     단일 HuggingFace 데이터셋을 로드하여 텍스트 리스트로 반환
     
@@ -326,25 +326,10 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     # 빈 텍스트 필터링 (병렬 처리 유지)
     converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=min(4, os.cpu_count() or 2))
     
-    # 메모리 효율적 리스트 변환: 스트리밍 방식으로 처리
-    # 전체를 한 번에 메모리에 로드하지 않고 반복자 사용
-    logger.info(f"    Converting to list format (memory-efficient)...")
-    formatted_data = []
-    chunk_size = 50000  # 5만 개씩 처리하여 메모리 사용량 제한
-    
-    for i in range(0, len(converted), chunk_size):
-        end_idx = min(i + chunk_size, len(converted))
-        chunk = converted.select(range(i, end_idx))
-        chunk_data = [{"text": t} for t in chunk["text"]]
-        formatted_data.extend(chunk_data)
-        # 메모리 해제
-        del chunk, chunk_data
-        if i % (chunk_size * 10) == 0:  # 10 청크마다 가비지 컬렉션
-            import gc
-            gc.collect()
-    
-    logger.info(f"    → {len(formatted_data):,} samples")
-    return formatted_data
+    # Dataset 객체를 그대로 반환 (메모리 효율적)
+    # 리스트 변환을 피하고 Dataset을 직접 사용하여 메모리 사용량 최소화
+    logger.info(f"    → {len(converted):,} samples")
+    return converted  # Dataset 객체 반환
 
 
 def load_pretrain_dataset(
@@ -369,7 +354,9 @@ def load_pretrain_dataset(
     """
     logger.info("📚 Loading pretrain dataset...")
     
-    all_data = []
+    from datasets import Dataset, concatenate_datasets
+    
+    datasets_list = []
 
     # 로컬 파일 로드
     if train_files:
@@ -380,9 +367,9 @@ def load_pretrain_dataset(
             logger.info(f"  Loading file: {file_path}")
             file_data = _load_single_file(file_path)
             logger.info(f"    → {len(file_data):,} samples")
-            all_data.extend(file_data)
+            datasets_list.append(Dataset.from_list(file_data))
     
-    # HuggingFace 데이터셋 로드
+    # HuggingFace 데이터셋 로드 (Dataset 객체를 그대로 사용)
     if dataset_names:
         if isinstance(dataset_names, str):
             dataset_names = [dataset_names]
@@ -391,15 +378,26 @@ def load_pretrain_dataset(
             # 첫 번째 데이터셋에만 config 적용
             config = dataset_config if i == 0 else None
             ds_data = _load_hf_dataset(ds_name, config)
-            all_data.extend(ds_data)
+            # Dataset 객체를 그대로 추가 (리스트 변환 없음)
+            if isinstance(ds_data, Dataset):
+                datasets_list.append(ds_data)
+            else:
+                # 호환성을 위해 리스트인 경우만 변환
+                datasets_list.append(Dataset.from_list(ds_data))
     
-    if not all_data:
+    if not datasets_list:
         raise ValueError("Either dataset_names or train_files must be provided")
     
-    logger.info(f"  Total: {len(all_data):,} samples")
+    # 여러 Dataset을 메모리 효율적으로 결합
+    if len(datasets_list) == 1:
+        combined_dataset = datasets_list[0]
+    else:
+        logger.info(f"  Concatenating {len(datasets_list)} datasets...")
+        combined_dataset = concatenate_datasets(datasets_list)
     
-    from datasets import Dataset
-    dataset = {"train": Dataset.from_list(all_data)}
+    logger.info(f"  Total: {len(combined_dataset):,} samples")
+    
+    dataset = {"train": combined_dataset}
     text_column = "text"
 
     logger.info(f"✓ Dataset loaded: {len(dataset['train'])} samples")
