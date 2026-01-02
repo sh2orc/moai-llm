@@ -283,9 +283,7 @@ echo "  - DATASET_NUM_PROC=48 (48 processes for parallel tokenization)"
 echo "  - Each process runs tokenizer independently → FAST!"
 echo ""
 
-# 48개 프로세스가 각각 독립적으로 토크나이저 실행 → 빠름!
-DATASET_NUM_PROC=48 \
-python3 train.py \
+python train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \
     --tokenizer_path "$TOKENIZER_PATH" \
