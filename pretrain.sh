@@ -266,7 +266,6 @@ torchrun \
     --bf16 \
     --gradient_checkpointing \
     --packing \
-    --sequential \
     --flash_attention \
     --num_proc 48 \
     --dataloader_num_workers 8 \
