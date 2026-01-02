@@ -1171,6 +1171,15 @@ def train_sequential(args):
             sys.stdout.flush()
     
     # ========================================================================
+    # Tokenize-only 모드: 여기서 종료
+    # ========================================================================
+    if hasattr(args, '_tokenize_only') and args._tokenize_only:
+        logger.info("="*80)
+        logger.info("✅ Tokenization completed! Exiting (tokenize-only mode)")
+        logger.info("="*80)
+        return
+    
+    # ========================================================================
     # STEP 3: W&B 초기화 (선택적)
     # ========================================================================
     if args.use_wandb:
@@ -1745,6 +1754,14 @@ def main():
         help="Process datasets sequentially one by one to save memory. "
              "Each dataset is loaded, trained, then freed before the next."
     )
+    
+    # Tokenize only 모드 (DDP 전에 토큰화만 수행)
+    parser.add_argument(
+        "--tokenize_only",
+        action="store_true",
+        help="Only tokenize datasets and exit (no training). "
+             "Use this to pre-tokenize before running torchrun."
+    )
 
     # 로깅
     parser.add_argument("--logging_steps", type=int, default=100)
@@ -1806,6 +1823,41 @@ def main():
     # 검증
     if not args.dataset and not args.train_file:
         parser.error("Either --dataset or --train_file must be provided")
+
+    # Tokenize only 모드: DDP 없이 토큰화만 수행
+    if args.tokenize_only:
+        print("="*80)
+        print("🔥 Tokenize-Only Mode: Pre-tokenizing datasets (no DDP)")
+        print("="*80)
+        
+        # Sequential이 필요
+        if not args.sequential:
+            args.sequential = True
+            print("⚡ Automatically enabling --sequential mode for tokenization")
+        
+        # 환경 변수 설정 (단일 프로세스이므로 full parallelism)
+        os.environ["TOKENIZERS_PARALLELISM"] = "true"
+        os.environ["RAYON_NUM_THREADS"] = str(os.cpu_count() or 96)
+        
+        # train_sequential 호출 (토큰화 부분만 실행됨)
+        print("🚀 Calling train_sequential for tokenization...")
+        
+        # DDP 환경 변수 제거 (단일 프로세스로 실행)
+        os.environ.pop("RANK", None)
+        os.environ.pop("WORLD_SIZE", None)
+        os.environ.pop("LOCAL_RANK", None)
+        os.environ.pop("MASTER_ADDR", None)
+        os.environ.pop("MASTER_PORT", None)
+        
+        # tokenization만 수행하고 training은 스킵하도록 플래그 설정
+        args._tokenize_only = True
+        
+        train_sequential(args)
+        
+        print("="*80)
+        print("✅ Tokenization completed! Now run torchrun for training.")
+        print("="*80)
+        return
 
     # 학습 시작
     train(args)

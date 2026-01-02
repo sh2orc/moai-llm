@@ -272,6 +272,35 @@ if [ "$USE_WANDB" = "true" ]; then
     WANDB_ARGS="--use_wandb --wandb_project $WANDB_PROJECT --wandb_run_name $WANDB_RUN_NAME"
 fi
 
+# ============================================================================
+# 🚀 STEP 1: Pre-tokenize datasets (BEFORE torchrun!)
+# ============================================================================
+echo ""
+echo "========================================================================"
+echo "🔥 STEP 1: Pre-tokenizing all datasets (before DDP)"
+echo "========================================================================"
+
+python3 train.py \
+    --mode pretrain \
+    --dataset "${DATASETS[@]}" \
+    --tokenizer_path "$TOKENIZER_PATH" \
+    --model_config "$MODEL_CONFIG" \
+    --output_dir "$OUTPUT_DIR" \
+    --max_seq_length "$MAX_SEQ_LENGTH" \
+    --packing \
+    --tokenize_only
+
+echo "✅ Pre-tokenization completed!"
+echo "========================================================================"
+echo ""
+
+# ============================================================================
+# 🚀 STEP 2: Run distributed training with torchrun
+# ============================================================================
+echo "========================================================================"
+echo "🚀 STEP 2: Starting distributed training"
+echo "========================================================================"
+
 torchrun \
     --nproc_per_node=$NUM_GPUS \
     --master_port=$MASTER_PORT \
