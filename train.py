@@ -73,11 +73,14 @@ except ImportError:
     psutil = None  # Optional dependency
 
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: Importing torch...", flush=True)
+    print(f"[DEBUG] Rank {rank}: Importing torch... (may take 10-30s with 8 GPUs)", flush=True)
+    sys.stdout.flush()
 import torch
 
 if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Torch imported successfully!", flush=True)
     print(f"[DEBUG] Rank {rank}: Importing transformers...", flush=True)
+    sys.stdout.flush()
 from transformers import (
     AutoTokenizer,
     Trainer,
@@ -86,26 +89,33 @@ from transformers import (
 )
 
 if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Transformers imported!", flush=True)
     print(f"[DEBUG] Rank {rank}: Importing datasets...", flush=True)
+    sys.stdout.flush()
 from datasets import load_dataset, disable_caching
 import datasets
 
 if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Datasets imported!", flush=True)
     print(f"[DEBUG] Rank {rank}: Configuring datasets...", flush=True)
+    sys.stdout.flush()
 # Enable memory-efficient settings for large datasets
 datasets.config.IN_MEMORY_MAX_SIZE = 0  # Force memory mapping (no in-memory)
 
 if rank == 0:
     print(f"[DEBUG] Rank {rank}: Importing moai_llm...", flush=True)
+    sys.stdout.flush()
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.model import MoaiForCausalLM
 
 if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Moai_llm imported!", flush=True)
     print(f"[DEBUG] Rank {rank}: Setting up logging...", flush=True)
+    sys.stdout.flush()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 if rank == 0:
-    print(f"[DEBUG] Rank {rank}: All imports complete!", flush=True)
+    print(f"[DEBUG] Rank {rank}: ✅ All imports complete!", flush=True)
     sys.stdout.flush()
 
 
