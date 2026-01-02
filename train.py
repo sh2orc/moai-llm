@@ -947,27 +947,21 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        # Multiprocessing 전략
-                        # datasets.map()이 multiprocessing 사용 시 TOKENIZERS_PARALLELISM을 강제로 false로 설정함
-                        # 따라서: 여러 프로세스 × 단일 스레드 토크나이저
-                        os.environ["TOKENIZERS_PARALLELISM"] = "false"  # datasets가 어차피 false로 만듦
+                        # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
+                        # 이미 8개 GPU가 각각 프로세스이므로 추가 multiprocessing 불가
+                        os.environ["TOKENIZERS_PARALLELISM"] = "true"
                         
-                        # 최적 프로세스 수: CPU 코어의 1/6 정도 (96코어 → 16프로세스)
-                        import multiprocessing
-                        cpu_count = multiprocessing.cpu_count()
-                        optimal_num_proc = min(16, max(8, cpu_count // 6))
-                        
-                        logger.info(f"  [Rank 0] ⚡ Multiprocessing tokenization: {optimal_num_proc} processes")
-                        logger.info(f"  [Rank 0]    (datasets.map forces TOKENIZERS_PARALLELISM=false per process)")
-                        logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
+                        logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
+                        logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
+                        logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
                             batched=True,
-                            batch_size=50000,  # 각 프로세스가 큰 배치 처리
-                            num_proc=optimal_num_proc,  # 여러 프로세스 + Fast Tokenizer
+                            batch_size=100000,  # 큰 배치로 Fast Tokenizer 최대 활용
+                            num_proc=1,  # DDP 환경에서는 multiprocessing 불가
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                            writer_batch_size=100000,
+                            writer_batch_size=200000,
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1015,11 +1009,11 @@ def train_sequential(args):
                     load_time = time.time() - load_start
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
             else:
-                # Multiprocessing 전략
+                # 단일 프로세스 환경: multiprocessing 사용 가능
                 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # datasets가 어차피 false로 만듦
                 import multiprocessing
                 optimal_num_proc = min(16, max(8, multiprocessing.cpu_count() // 6))
-                logger.info(f"  ⚡ Multiprocessing tokenization: {optimal_num_proc} processes")
+                logger.info(f"  ⚡ Multiprocessing tokenization: {optimal_num_proc} processes (non-DDP)")
                 logger.info(f"     (TOKENIZERS_PARALLELISM=false per process by datasets)")
                 logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
                 tokenized_ds = dataset["train"].map(
@@ -1079,20 +1073,19 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        # 하이브리드: Fast Tokenizer + Multiprocessing
+                        # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                        import multiprocessing
-                        optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
-                        logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
-                        logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
+                        logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
+                        logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
+                        logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
                             batched=True,
-                            batch_size=50000,
-                            num_proc=optimal_num_proc,
+                            batch_size=100000,
+                            num_proc=1,  # DDP 환경에서는 multiprocessing 불가
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=False,
-                            writer_batch_size=100000,
+                            writer_batch_size=200000,
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1140,11 +1133,11 @@ def train_sequential(args):
                     load_time = time.time() - load_start
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
             else:
-                # Multiprocessing 전략
+                # 단일 프로세스 환경: multiprocessing 사용 가능
                 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # datasets가 어차피 false로 만듦
                 import multiprocessing
                 optimal_num_proc = min(16, max(8, multiprocessing.cpu_count() // 6))
-                logger.info(f"  ⚡ Multiprocessing tokenization: {optimal_num_proc} processes")
+                logger.info(f"  ⚡ Multiprocessing tokenization: {optimal_num_proc} processes (non-DDP)")
                 logger.info(f"     (TOKENIZERS_PARALLELISM=false per process by datasets)")
                 logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
                 tokenized_dataset = dataset["train"].map(
@@ -1367,20 +1360,19 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    # 하이브리드: Fast Tokenizer + Multiprocessing
+                    # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
                     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                    import multiprocessing
-                    optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
-                    logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
-                    logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
+                    logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
+                    logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
+                    logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
                         batched=True,
-                        batch_size=50000,
-                        num_proc=optimal_num_proc,
+                        batch_size=100000,
+                        num_proc=1,  # DDP 환경에서는 multiprocessing 불가
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
-                        writer_batch_size=100000,
+                        writer_batch_size=200000,
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1428,11 +1420,12 @@ def train(args):
                 load_time = time.time() - load_start
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
         else:
-            # 하이브리드: Fast Tokenizer + Multiprocessing
-            os.environ["TOKENIZERS_PARALLELISM"] = "true"
+            # 단일 프로세스 환경: multiprocessing 사용 가능
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"  # datasets가 어차피 false로 만듦
             import multiprocessing
-            optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
-            logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+            optimal_num_proc = min(16, max(8, multiprocessing.cpu_count() // 6))
+            logger.info(f"  ⚡ Multiprocessing tokenization: {optimal_num_proc} processes (non-DDP)")
+            logger.info(f"     (TOKENIZERS_PARALLELISM=false per process by datasets)")
             logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
@@ -1492,20 +1485,19 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    # 하이브리드: Fast Tokenizer + Multiprocessing
+                    # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
                     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                    import multiprocessing
-                    optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
-                    logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
-                    logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
+                    logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
+                    logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
+                    logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
-                        batch_size=50000,
-                        num_proc=optimal_num_proc,
+                        batch_size=100000,
+                        num_proc=1,  # DDP 환경에서는 multiprocessing 불가
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
-                        writer_batch_size=100000,
+                        writer_batch_size=200000,
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1553,11 +1545,12 @@ def train(args):
                 load_time = time.time() - load_start
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
         else:
-            # 하이브리드: Fast Tokenizer + Multiprocessing
-            os.environ["TOKENIZERS_PARALLELISM"] = "true"
+            # 단일 프로세스 환경: multiprocessing 사용 가능
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"  # datasets가 어차피 false로 만듦
             import multiprocessing
-            optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
-            logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+            optimal_num_proc = min(16, max(8, multiprocessing.cpu_count() // 6))
+            logger.info(f"  ⚡ Multiprocessing tokenization: {optimal_num_proc} processes (non-DDP)")
+            logger.info(f"     (TOKENIZERS_PARALLELISM=false per process by datasets)")
             logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
