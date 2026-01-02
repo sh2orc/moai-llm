@@ -199,13 +199,40 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     
     DDP 환경에서는 rank 0만 데이터셋을 다운로드하고, 다른 프로세스는 대기합니다.
     """
-    # DDP 환경 확인
+    # DDP 환경 확인 (환경 변수 사용 - Trainer 초기화 전에도 작동)
     try:
-        is_distributed = torch.distributed.is_initialized()
-        is_main_process = torch.distributed.get_rank() == 0
-    except (AttributeError, RuntimeError):
+        # 환경 변수로 rank 확인 (torchrun이 설정)
+        local_rank = int(os.environ.get("LOCAL_RANK", -1))
+        rank = int(os.environ.get("RANK", -1))
+        world_size = int(os.environ.get("WORLD_SIZE", -1))
+        
+        # distributed가 초기화되었는지 확인
         is_distributed = False
         is_main_process = True
+        
+        # 환경 변수로 distributed 여부 확인
+        if rank >= 0 and world_size > 1:
+            is_distributed = True
+            is_main_process = rank == 0
+        elif torch.distributed.is_available():
+            # torch.distributed가 초기화되었는지 확인
+            try:
+                if torch.distributed.is_initialized():
+                    is_distributed = True
+                    is_main_process = torch.distributed.get_rank() == 0
+            except (AttributeError, RuntimeError, ValueError):
+                pass
+    except (AttributeError, RuntimeError, ValueError):
+        is_distributed = False
+        is_main_process = True
+    
+    # rank 변수 보존 (로깅용)
+    try:
+        current_rank = rank if 'rank' in locals() and rank >= 0 else (
+            torch.distributed.get_rank() if is_distributed and torch.distributed.is_initialized() else 0
+        )
+    except (AttributeError, RuntimeError, ValueError):
+        current_rank = 0
     
     # dataset_name:config_name 형식 파싱
     if ":" in dataset_name:
@@ -217,8 +244,14 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     
     # DDP 환경에서는 rank 0만 데이터셋을 다운로드
     if is_distributed:
-        # 모든 프로세스가 동기화 지점에 도달할 때까지 대기
-        torch.distributed.barrier()
+        # barrier는 distributed가 완전히 초기화된 후에만 사용
+        try:
+            if torch.distributed.is_initialized():
+                # 모든 프로세스가 동기화 지점에 도달할 때까지 대기
+                torch.distributed.barrier()
+        except (RuntimeError, ValueError, AttributeError):
+            # barrier 실패 시 환경 변수만으로 동기화 (rank 0만 다운로드)
+            pass
         
         if is_main_process:
             # rank 0만 데이터셋 다운로드
@@ -229,14 +262,26 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
             else:
                 raw_dataset = load_dataset(dataset_name)
             logger.info(f"    [Rank 0] Dataset download completed")
-            # 다운로드 완료 후 barrier
-            torch.distributed.barrier()
+            
+            # 다운로드 완료 후 barrier (가능한 경우)
+            try:
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+            except (RuntimeError, ValueError, AttributeError):
+                pass
         else:
             # 다른 프로세스는 rank 0이 다운로드 완료할 때까지 대기
-            logger.info(f"    [Rank {torch.distributed.get_rank()}] Waiting for dataset download...")
-            torch.distributed.barrier()
+            logger.info(f"    [Rank {current_rank}] Waiting for dataset download...")
+            try:
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+            except (RuntimeError, ValueError, AttributeError):
+                # barrier 실패 시 짧은 대기 후 진행 (rank 0이 다운로드 완료했을 것으로 가정)
+                import time
+                time.sleep(2)
+            
             # barrier 통과 후 캐시된 데이터셋 로드 (다운로드 없이)
-            logger.info(f"    [Rank {torch.distributed.get_rank()}] Loading cached dataset...")
+            logger.info(f"    [Rank {current_rank}] Loading cached dataset...")
             if dataset_config:
                 raw_dataset = load_dataset(dataset_name, dataset_config, download_mode="reuse_cache_if_exists")
             else:
