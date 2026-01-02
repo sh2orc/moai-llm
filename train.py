@@ -1014,60 +1014,56 @@ def train_sequential(args):
                 logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
             else:
                 # 캐시가 없으면 토큰화
-                logger.info(f"  🔤 Tokenizing with BATCH ITERATOR...")
+                import multiprocessing
+                import time
+                
+                num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, multiprocessing.cpu_count())))
+                
+                logger.info(f"  🔤 Tokenizing with {num_proc} processes (each with Fast Tokenizer)...")
+                sys.stdout.flush()
                 
                 if args.packing:
-                    import time
-                    
-                    train_data = dataset["train"]
-                    total_samples = len(train_data)
-                    batch_size = 50000  # 5만 개씩 배치
-                    
-                    logger.info(f"  ⚡ Batch Iterator Tokenization")
-                    logger.info(f"     Total samples: {total_samples:,}")
-                    logger.info(f"     Batch size: {batch_size:,}")
-                    sys.stdout.flush()
-                    
-                    all_input_ids = []
-                    start_time = time.time()
-                    samples_done = 0
-                    
-                    # iter()를 사용하여 배치 단위로 빠르게 순회
-                    for batch in train_data.iter(batch_size=batch_size):
-                        texts = batch[text_column]
-                        
-                        # 배치 토크나이징 (Fast Tokenizer 내부 병렬 처리)
-                        tokenized = tokenizer(
-                            texts,
+                    def batch_tokenize(examples):
+                        return tokenizer(
+                            examples[text_column],
                             truncation=False,
                             padding=False,
                             add_special_tokens=True,
                         )
-                        
-                        all_input_ids.extend(tokenized["input_ids"])
-                        samples_done += len(texts)
-                        
-                        # 진행률 출력 (10만 개마다)
-                        if samples_done % 100000 == 0 or samples_done == total_samples:
-                            elapsed = time.time() - start_time
-                            samples_per_sec = samples_done / elapsed if elapsed > 0 else 0
-                            eta = (total_samples - samples_done) / samples_per_sec if samples_per_sec > 0 else 0
-                            
-                            logger.info(f"  📦 Progress: {samples_done:,}/{total_samples:,} "
-                                       f"({100*samples_done/total_samples:.1f}%) "
-                                       f"[{samples_per_sec:.0f} samples/s, ETA: {eta/60:.1f}min]")
-                            sys.stdout.flush()
+                    
+                    train_data = dataset["train"]
+                    total_samples = len(train_data)
+                    
+                    logger.info(f"  ⚡ Multi-Process Tokenization")
+                    logger.info(f"     Total samples: {total_samples:,}")
+                    logger.info(f"     Processes: {num_proc}")
+                    logger.info(f"     Batch size per process: 10,000")
+                    sys.stdout.flush()
+                    
+                    start_time = time.time()
+                    
+                    tokenized_ds = train_data.map(
+                        batch_tokenize,
+                        batched=True,
+                        batch_size=10000,  # 각 프로세스당 배치 크기
+                        num_proc=num_proc,  # 48개 프로세스!
+                        remove_columns=train_data.column_names,
+                        load_from_cache_file=False,
+                        writer_batch_size=50000,
+                        keep_in_memory=False,
+                        desc=f"Tokenizing (num_proc={num_proc})",
+                    )
                     
                     total_time = time.time() - start_time
                     logger.info(f"  ✅ Tokenization completed in {total_time/60:.1f} minutes")
-                    logger.info(f"     Average speed: {total_samples/total_time:.0f} samples/s")
+                    logger.info(f"     Speed: {total_samples/total_time:.0f} samples/s")
                     sys.stdout.flush()
                     
                     # Packing
                     logger.info(f"  📦 Packing sequences...")
                     sys.stdout.flush()
-                    tokenized_list = [{"input_ids": ids} for ids in all_input_ids]
-                    del all_input_ids
+                    tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+                    del tokenized_ds
                     gc.collect()
                     
                     concatenated_chunks = concatenate_sequences(
