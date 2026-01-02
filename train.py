@@ -1275,10 +1275,14 @@ def train_sequential(args):
 
 def train(args):
     """메인 학습 함수"""
-
+    
+    import sys
+    sys.stdout.flush()  # 즉시 출력
+    
     logger.info("="*80)
     logger.info(f"🚀 Starting {args.mode.upper()} training")
     logger.info("="*80)
+    sys.stdout.flush()
     
     # W&B 초기화 (사용하는 경우)
     if args.use_wandb:
@@ -1305,9 +1309,24 @@ def train(args):
         return
 
     # ============================================================================
+    # DDP 환경 확인 (STEP 0 전에 먼저 확인)
+    # ============================================================================
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    is_distributed = world_size > 1
+    is_main_process = rank == 0
+    
+    if is_main_process:
+        logger.info(f"🌐 Environment: {world_size} GPU(s), Rank {rank}")
+    sys.stdout.flush()
+
+    # ============================================================================
     # STEP 0: 토크나이저만 먼저 로드 (DDP 전!)
     # ============================================================================
-    logger.info("📝 Loading tokenizer (before DDP)...")
+    if is_main_process:
+        logger.info("📝 [Rank 0] Loading tokenizer (before DDP)...")
+    sys.stdout.flush()
+    
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer_path,
         use_fast=True,
@@ -1315,10 +1334,12 @@ def train(args):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    if not tokenizer.is_fast:
-        logger.warning("⚠️ WARNING: Using slow tokenizer! This will be very slow.")
-    else:
-        logger.info("✅ Using Fast Tokenizer (Rust-based)")
+    if is_main_process:
+        if not tokenizer.is_fast:
+            logger.warning("⚠️ WARNING: Using slow tokenizer! This will be very slow.")
+        else:
+            logger.info("✅ [Rank 0] Using Fast Tokenizer (Rust-based)")
+    sys.stdout.flush()
 
     # ============================================================================
     # STEP 1: 데이터셋 로드 및 토크나이징 (DDP 전! multiprocessing 사용 가능!)
@@ -1330,13 +1351,20 @@ def train(args):
     is_main_process = rank == 0
     
     if is_main_process:
-        logger.info("📚 Loading and tokenizing dataset (before DDP)...")
-        logger.info("⚡ Rank 0 will tokenize, others will load from cache!")
+        logger.info("📚 [Rank 0] Loading datasets (may take 2-5 minutes for large datasets)...")
+        logger.info("⚡ Rank 0 will process data, others will load from cache!")
+        sys.stdout.flush()
     else:
-        logger.info(f"📚 [Rank {rank}] Waiting for rank 0 to complete tokenization...")
+        logger.info(f"📚 [Rank {rank}] Waiting for rank 0 to complete data processing...")
+        sys.stdout.flush()
     
-    # 데이터셋 로드 (모든 rank)
+    # 데이터셋 로드
+    import time
+    load_start = time.time()
+    
     if args.mode == "pretrain":
+        if is_main_process:
+            logger.info(f"[Rank 0] Loading {len(args.dataset) if args.dataset else 0} datasets...")
         dataset, text_column = load_pretrain_dataset(
             dataset_names=args.dataset,
             dataset_config=args.dataset_config,
@@ -1348,6 +1376,12 @@ def train(args):
             dataset_names=args.dataset,
             train_files=args.train_file,
         )
+    
+    load_time = time.time() - load_start
+    if is_main_process:
+        logger.info(f"✅ [Rank 0] Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples")
+    else:
+        logger.info(f"✅ [Rank {rank}] Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples")
 
     # 토크나이징 캐시 경로
     cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
@@ -1721,11 +1755,21 @@ def main():
 
 if __name__ == "__main__":
     # 즉시 로그 출력 (사용자가 프로그램이 실행 중임을 알 수 있도록)
-    print("="*80)
-    print("🚀 MOAI-LLM Training Starting...")
-    print("⏳ Initializing Python environment and loading libraries...")
-    print("="*80)
     import sys
+    import os
+    
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
+    if rank == 0:
+        print("="*80, flush=True)
+        print("🚀 MOAI-LLM Training Starting...", flush=True)
+        print("⏳ Initializing Python environment and loading libraries...", flush=True)
+        print(f"🌐 World size: {world_size} GPUs", flush=True)
+        print("="*80, flush=True)
+    else:
+        print(f"[Rank {rank}] Initializing...", flush=True)
+    
     sys.stdout.flush()
     main()
 
