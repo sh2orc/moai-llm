@@ -742,7 +742,11 @@ def setup_model_and_tokenizer(
 
     # 토크나이저
     logger.info(f"📝 Loading tokenizer from: {tokenizer_path}")
+    import time
+    tok_start = time.time()
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tok_time = time.time() - tok_start
+    logger.info(f"✓ Tokenizer loaded in {tok_time:.1f}s")
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -750,7 +754,11 @@ def setup_model_and_tokenizer(
     # 모델
     if pretrained_model:
         logger.info(f"🔄 Loading pretrained model: {pretrained_model}")
+        logger.info(f"  (This may take 20-30s for 8 GPUs...)")
+        model_start = time.time()
         model = MoaiForCausalLM.from_pretrained(pretrained_model, dtype=dtype)
+        model_time = time.time() - model_start
+        logger.info(f"✓ Model loaded in {model_time:.1f}s")
         logger.info(f"  Model dtype: {dtype_str}")
     else:
         logger.info("🆕 Creating new model from config")
@@ -808,6 +816,15 @@ def train_sequential(args):
     """
     import gc
     
+    # DDP 환경 정보 출력
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank = int(os.environ.get("RANK", 0))
+    if world_size > 1:
+        logger.info(f"🌐 Distributed Training: Rank {rank}/{world_size}")
+        logger.info(f"⏳ Initializing DDP environment... (may take 10-20s)")
+    else:
+        logger.info(f"💻 Single GPU Training")
+    
     dataset_names = args.dataset if args.dataset else []
     train_files = args.train_file if args.train_file else []
     
@@ -822,6 +839,16 @@ def train_sequential(args):
     for i, (src_type, src_name) in enumerate(all_sources):
         logger.info(f"  {i+1}. [{src_type}] {src_name}")
     
+    # 토크나이저는 한 번만 로드 (모든 데이터셋에서 재사용)
+    logger.info("⏳ Loading tokenizer (once for all datasets)...")
+    logger.info("   (This may take 5-10s...)")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path,
+        trust_remote_code=True,
+        use_fast=True,
+    )
+    logger.info(f"✓ Tokenizer loaded: {args.tokenizer_path}")
+    
     current_checkpoint = args.pretrained_model
     
     for idx, (src_type, src_name) in enumerate(all_sources):
@@ -829,8 +856,13 @@ def train_sequential(args):
         logger.info(f"🔄 [{idx+1}/{len(all_sources)}] Processing: {src_name}")
         logger.info("="*80)
         
-        # 1. 모델 및 토크나이저 로드
-        model, tokenizer = setup_model_and_tokenizer(
+        # 1. 모델 로드 (토크나이저는 재사용)
+        if idx == 0:
+            logger.info(f"🔄 Loading model from: {current_checkpoint or 'scratch'}")
+        else:
+            logger.info(f"🔄 Loading model from previous stage: {current_checkpoint}")
+        
+        model, _ = setup_model_and_tokenizer(
             tokenizer_path=args.tokenizer_path,
             model_config=args.model_config,
             pretrained_model=current_checkpoint,
@@ -839,6 +871,7 @@ def train_sequential(args):
             use_bf16=args.bf16,
             use_fp16=args.fp16,
         )
+        logger.info(f"✓ Model loaded")
         
         # 2. 해당 데이터셋만 로드
         if src_type == "hf":
@@ -1183,6 +1216,15 @@ def train(args):
     logger.info("="*80)
     logger.info(f"🚀 Starting {args.mode.upper()} training")
     logger.info("="*80)
+    
+    # DDP 환경 정보 출력
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank = int(os.environ.get("RANK", 0))
+    if world_size > 1:
+        logger.info(f"🌐 Distributed Training: Rank {rank}/{world_size}")
+        logger.info(f"⏳ Initializing DDP environment... (may take 10-20s)")
+    else:
+        logger.info(f"💻 Single GPU Training")
 
     # Sequential 모드: 각 데이터셋을 순차적으로 처리
     if args.sequential and args.dataset and len(args.dataset) > 1:
@@ -1191,6 +1233,7 @@ def train(args):
         return
 
     # 1. 모델 및 토크나이저 로드
+    logger.info("⏳ Loading model and tokenizer... (may take 20-30s for 8 GPUs)")
     model, tokenizer = setup_model_and_tokenizer(
         tokenizer_path=args.tokenizer_path,
         model_config=args.model_config,
@@ -1633,4 +1676,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # 즉시 로그 출력 (사용자가 프로그램이 실행 중임을 알 수 있도록)
+    print("="*80)
+    print("🚀 MOAI-LLM Training Starting...")
+    print("⏳ Initializing Python environment and loading libraries...")
+    print("="*80)
+    import sys
+    sys.stdout.flush()  # 버퍼 플러시로 즉시 출력
+    
     main()
