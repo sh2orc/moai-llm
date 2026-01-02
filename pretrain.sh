@@ -143,17 +143,16 @@ export MKL_NUM_THREADS=48
 # ============================================================================
 # Dataset Loading Optimization (대규모 데이터셋 최적화)
 # ============================================================================
-# 병렬 처리 프로세스 수 (기본: 48 for high-performance CPUs)
-export DATASET_NUM_PROC=${DATASET_NUM_PROC:-48}
-# 데이터 변환 배치 크기 (기본: 20000, 클수록 빠르지만 메모리 많이 사용)
-export DATASET_BATCH_SIZE=${DATASET_BATCH_SIZE:-20000}
-# 디스크 쓰기 배치 크기 (기본: 100000, 클수록 I/O 효율 향상)
-export DATASET_WRITER_BATCH_SIZE=${DATASET_WRITER_BATCH_SIZE:-100000}
+# DATASET_NUM_PROC: train.py가 데이터셋 크기에 따라 자동 조절
+# - >500만: num_proc=8 (안정성 우선)
+# - 100만~500만: num_proc=16
+# - <100만: num_proc=32 (속도 우선)
+# 수동 설정 시: export DATASET_NUM_PROC=16 ./pretrain.sh
+# export DATASET_NUM_PROC=${DATASET_NUM_PROC:-48}  # 자동 튜닝으로 변경
 
 echo "📊 Dataset loading settings:"
-echo "  - Parallel processes: $DATASET_NUM_PROC"
-echo "  - Batch size: $DATASET_BATCH_SIZE"
-echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
+echo "  - Parallel processes: AUTO (based on dataset size)"
+echo "  - Large (>5M): 8 procs | Medium (1-5M): 16 procs | Small (<1M): 32 procs"
 
 # ============================================================================
 # Tokenization Optimization (토크나이징 최적화) ⚡⚡⚡
@@ -280,13 +279,12 @@ echo "========================================================================"
 echo "🔥 STEP 1: Pre-tokenizing all datasets (before DDP)"
 echo "========================================================================"
 echo "⚡ Tokenization settings:"
-echo "  - DATASET_NUM_PROC=48 (48 processes for parallel tokenization)"
-echo "  - Each process runs tokenizer independently → FAST!"
+echo "  - num_proc: AUTO (8 for >5M, 16 for 1-5M, 32 for <1M samples)"
+echo "  - Each process runs tokenizer independently"
 echo ""
 
-# 48개 프로세스가 각각 독립적으로 토크나이저 실행 → 빠름!
-DATASET_NUM_PROC=48 \
-python3 train.py \
+# train.py가 데이터셋 크기에 따라 num_proc 자동 조절
+python train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \
     --tokenizer_path "$TOKENIZER_PATH" \
