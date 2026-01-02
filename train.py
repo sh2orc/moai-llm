@@ -288,15 +288,29 @@ def tokenize_dataset(
     """
     import multiprocessing
 
-    # 최적 설정 자동 결정
+    total_samples = len(dataset)
     cpu_count = multiprocessing.cpu_count()
-    if num_proc is None:
-        num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, cpu_count)))
 
-    # batch_size: 진행률 업데이트 빈도와 IPC 오버헤드의 균형
-    # 10000 = 더 자주 진행률 표시, 약간의 오버헤드 증가
-    batch_size = int(os.getenv("DATASET_BATCH_SIZE", 10000))
-    writer_batch_size = int(os.getenv("DATASET_WRITER_BATCH_SIZE", 50000))
+    # 데이터셋 크기에 따라 최적 프로세스 수 자동 결정
+    # 대규모 데이터셋: 적은 프로세스 = 안정성 + 메모리 절약
+    # 소규모 데이터셋: 많은 프로세스 = 속도 우선
+    if num_proc is None:
+        env_num_proc = os.getenv("DATASET_NUM_PROC")
+        if env_num_proc:
+            num_proc = int(env_num_proc)
+        elif total_samples > 5_000_000:
+            num_proc = 8   # 대규모 (500만+): 안정성 우선
+        elif total_samples > 1_000_000:
+            num_proc = 16  # 중규모 (100만~500만)
+        else:
+            num_proc = min(32, cpu_count)  # 소규모: 속도 우선
+
+    # 배치 크기도 데이터셋 크기에 따라 조절
+    if total_samples > 5_000_000:
+        batch_size = 5000   # 대규모: 더 자주 진행률 표시
+    else:
+        batch_size = 10000
+    writer_batch_size = 50000
 
     # 핵심: 멀티프로세싱 사용 시 반드시 false (CPU 쓰레싱 방지)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -305,13 +319,16 @@ def tokenize_dataset(
     if not tokenizer.is_fast:
         logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
-    total_samples = len(dataset)
+    # 예상 시간 계산 (보수적 추정)
+    estimated_speed = num_proc * 2000  # 코드/긴 텍스트는 느림
+    estimated_time = total_samples / estimated_speed / 60
+
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Processes: {num_proc}")
+    logger.info(f"   Processes: {num_proc} (auto-tuned for dataset size)")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
-    logger.info(f"   Expected speed: ~{num_proc * 7000:,} samples/sec")
+    logger.info(f"   Estimated time: ~{estimated_time:.0f} min")
 
     start_time = time.time()
 
