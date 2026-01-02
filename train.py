@@ -242,7 +242,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     
     logger.info(f"  Loading HuggingFace: {dataset_name}")
     
-    # DDP 환경에서는 rank 0만 데이터셋을 다운로드
+    # DDP 환경에서는 rank 0만 데이터셋을 다운로드 및 변환
     if is_distributed:
         # barrier는 distributed가 완전히 초기화된 후에만 사용
         try:
@@ -312,16 +312,60 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         return {"text": texts}
     
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
-    # num_proc를 줄여서 프로세스 간 통신 버퍼 사용량 감소
-    converted = train_data.map(
-        convert_batch,
-        batched=True,
-        batch_size=500,  # 1000 -> 500으로 감소 (프로세스당 메모리 사용량 감소)
-        num_proc=min(4, os.cpu_count() or 2),  # 8 -> 4로 감소 (버퍼 공간 부족 방지)
-        remove_columns=train_data.column_names,
-        load_from_cache_file=True,  # Use cache to avoid re-tokenizing
-        desc=f"Converting {dataset_name}",
-    )
+    # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 대기하여 캐시 파일 충돌 방지
+    if is_distributed:
+        if is_main_process:
+            # rank 0만 데이터셋 변환 (캐시 파일 쓰기)
+            logger.info(f"    [Rank 0] Converting dataset...")
+            converted = train_data.map(
+                convert_batch,
+                batched=True,
+                batch_size=500,
+                num_proc=min(4, os.cpu_count() or 2),
+                remove_columns=train_data.column_names,
+                load_from_cache_file=True,
+                desc=f"Converting {dataset_name}",
+            )
+            logger.info(f"    [Rank 0] Dataset conversion completed")
+            # 변환 완료 후 barrier
+            try:
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+            except (RuntimeError, ValueError, AttributeError):
+                import time
+                time.sleep(2)
+        else:
+            # 다른 프로세스는 rank 0이 변환 완료할 때까지 대기
+            logger.info(f"    [Rank {current_rank}] Waiting for dataset conversion...")
+            try:
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+            except (RuntimeError, ValueError, AttributeError):
+                import time
+                time.sleep(5)  # rank 0이 완료할 시간 확보
+            
+            # barrier 통과 후 캐시된 데이터셋 로드 (변환 없이)
+            logger.info(f"    [Rank {current_rank}] Loading cached converted dataset...")
+            converted = train_data.map(
+                convert_batch,
+                batched=True,
+                batch_size=500,
+                num_proc=1,  # 단일 프로세스로 캐시 읽기만
+                remove_columns=train_data.column_names,
+                load_from_cache_file=True,  # 캐시에서만 로드
+                desc=f"Loading cached {dataset_name}",
+            )
+    else:
+        # 단일 프로세스 환경
+        converted = train_data.map(
+            convert_batch,
+            batched=True,
+            batch_size=500,
+            num_proc=min(4, os.cpu_count() or 2),
+            remove_columns=train_data.column_names,
+            load_from_cache_file=True,
+            desc=f"Converting {dataset_name}",
+        )
     
     # 빈 텍스트 필터링 (단일 프로세스로 변경 - 버퍼 공간 부족 방지)
     # 병렬 필터링은 프로세스 간 통신 버퍼를 많이 사용하므로 단일 프로세스 사용
