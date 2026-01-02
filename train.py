@@ -903,29 +903,229 @@ def train_sequential(args):
     """
     데이터셋을 순차적으로 처리하는 학습 함수 (메모리 절약)
     
-    각 데이터셋에 대해:
-    1. 해당 데이터셋만 로드
-    2. 토큰화 및 학습
-    3. 체크포인트 저장
-    4. 메모리 해제
-    5. 다음 데이터셋으로 (이전 체크포인트에서 resume)
+    ⚡ 최적화된 순서:
+    1. 모든 데이터셋을 먼저 토큰화 (DDP 전, multiprocessing 사용!)
+    2. DDP 초기화 및 모델 로드
+    3. 각 데이터셋으로 순차 학습 (이미 토큰화된 데이터 사용)
+    4. 체크포인트 저장 및 메모리 해제
     """
     import gc
+    import sys
     
-    # DDP 환경 정보 출력
+    # DDP 환경 정보
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
-    if world_size > 1:
-        logger.info(f"🌐 Distributed Training: Rank {rank}/{world_size}")
-        logger.info(f"⏳ Initializing DDP environment... (may take 10-20s)")
-    else:
-        logger.info(f"💻 Single GPU Training")
+    is_distributed = world_size > 1
+    is_main_process = rank == 0
     
-    # W&B 초기화 (사용하는 경우)
+    if is_main_process:
+        logger.info(f"🌐 Environment: {world_size} GPU(s), Sequential Mode")
+        logger.info(f"⚡ Strategy: Pre-tokenize all datasets, then train sequentially")
+    sys.stdout.flush()
+    
+    # ========================================================================
+    # STEP 0: 데이터 소스 리스트 준비
+    # ========================================================================
+    dataset_names = args.dataset if args.dataset else []
+    train_files = args.train_file if args.train_file else []
+    
+    all_sources = []
+    for ds in dataset_names:
+        all_sources.append(("hf", ds))
+    for f in train_files:
+        all_sources.append(("file", f))
+    
+    if is_main_process:
+        logger.info(f"📋 Sequential Mode: Processing {len(all_sources)} datasets")
+        for i, (src_type, src_name) in enumerate(all_sources):
+            logger.info(f"  {i+1}. [{src_type}] {src_name}")
+    sys.stdout.flush()
+    
+    # ========================================================================
+    # STEP 1: 토크나이저 로드 (DDP 전!)
+    # ========================================================================
+    if is_main_process:
+        logger.info("📝 [Rank 0] Loading tokenizer...")
+    sys.stdout.flush()
+    
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path,
+        trust_remote_code=True,
+        use_fast=True,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    if is_main_process:
+        if not tokenizer.is_fast:
+            logger.warning("⚠️ WARNING: Using slow tokenizer!")
+        else:
+            logger.info("✅ [Rank 0] Using Fast Tokenizer (Rust-based)")
+    sys.stdout.flush()
+    
+    # ========================================================================
+    # STEP 2: 모든 데이터셋을 먼저 토큰화 (DDP 전! multiprocessing 사용!)
+    # ========================================================================
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("⚡ STEP 2: Pre-tokenizing all datasets (before DDP)")
+        logger.info("="*80)
+    sys.stdout.flush()
+    
+    tokenized_datasets_info = []  # 각 데이터셋의 정보 저장
+    
+    for idx, (src_type, src_name) in enumerate(all_sources):
+        if is_main_process:
+            logger.info(f"")
+            logger.info(f"📦 [{idx+1}/{len(all_sources)}] Dataset: {src_name}")
+        sys.stdout.flush()
+        
+        # 데이터셋 로드
+        if is_main_process:
+            logger.info(f"  Loading dataset...")
+        
+        if src_type == "hf":
+            dataset, text_column = load_pretrain_dataset(
+                dataset_names=[src_name],
+                dataset_config=args.dataset_config if idx == 0 else None,
+                train_files=None,
+                text_column=args.text_column,
+            )
+        else:
+            dataset, text_column = load_pretrain_dataset(
+                dataset_names=None,
+                dataset_config=None,
+                train_files=[src_name],
+                text_column=args.text_column,
+            )
+        
+        # 토큰화 (Rank 0만)
+        cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        dataset_hash = hashlib.md5(f"{src_name}_seq_{idx}".encode()).hexdigest()[:16]
+        tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+        tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+        
+        from datasets import Dataset as HFDataset
+        
+        if tokenized_cache_path.exists() and tokenized_marker.exists():
+            if is_main_process:
+                logger.info(f"  ✅ Loading cached tokenized dataset")
+            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+        elif is_main_process:
+            # Rank 0만 토큰화
+            logger.info(f"  🔤 Tokenizing with multiprocessing...")
+            
+            if args.packing:
+                def batch_tokenize(examples):
+                    return tokenizer(
+                        examples[text_column],
+                        truncation=False,
+                        padding=False,
+                        add_special_tokens=True,
+                    )
+                
+                os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                import multiprocessing
+                cpu_count = multiprocessing.cpu_count()
+                optimal_num_proc = min(32, max(16, cpu_count // 6))
+                
+                logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes, batch_size=50000")
+                
+                tokenized_ds = dataset["train"].map(
+                    batch_tokenize,
+                    batched=True,
+                    batch_size=50000,
+                    num_proc=optimal_num_proc,
+                    remove_columns=dataset["train"].column_names,
+                    load_from_cache_file=False,
+                    writer_batch_size=100000,
+                    keep_in_memory=False,
+                    desc=f"Tokenizing {src_name}",
+                )
+                
+                logger.info(f"  📦 Packing sequences...")
+                tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+                del tokenized_ds
+                
+                concatenated_chunks = concatenate_sequences(
+                    tokenized_sequences=tokenized_list,
+                    max_seq_length=args.max_seq_length,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+                del tokenized_list
+                
+                tokenized_dataset = HFDataset.from_list(concatenated_chunks)
+                del concatenated_chunks
+            else:
+                def tokenize_function(examples):
+                    return tokenizer(
+                        examples[text_column],
+                        truncation=True,
+                        max_length=args.max_seq_length,
+                        padding=False,
+                        return_special_tokens_mask=True,
+                    )
+                
+                os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                import multiprocessing
+                cpu_count = multiprocessing.cpu_count()
+                optimal_num_proc = min(32, max(16, cpu_count // 6))
+                
+                logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes")
+                
+                tokenized_dataset = dataset["train"].map(
+                    tokenize_function,
+                    batched=True,
+                    batch_size=50000,
+                    num_proc=optimal_num_proc,
+                    remove_columns=dataset["train"].column_names,
+                    load_from_cache_file=False,
+                    writer_batch_size=100000,
+                    keep_in_memory=False,
+                    desc=f"Tokenizing {src_name}",
+                )
+            
+            # 캐시 저장
+            logger.info(f"  💾 Saving tokenized dataset...")
+            tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
+            tokenized_marker.touch()
+            logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples")
+        else:
+            # 다른 rank는 마커 대기
+            max_wait = 7200
+            waited = 0
+            while not tokenized_marker.exists() and waited < max_wait:
+                time_module.sleep(5)
+                waited += 5
+            
+            if not tokenized_marker.exists():
+                raise TimeoutError(f"Rank {rank}: Tokenizing timeout")
+            
+            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+        
+        # 정보 저장
+        tokenized_datasets_info.append({
+            'name': src_name,
+            'cache_path': tokenized_cache_path,
+            'num_samples': len(tokenized_dataset),
+        })
+        
+        del dataset
+        gc.collect()
+    
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("✅ All datasets pre-tokenized!")
+        logger.info("="*80)
+    sys.stdout.flush()
+    
+    # ========================================================================
+    # STEP 3: W&B 초기화 (선택적)
+    # ========================================================================
     if args.use_wandb:
         try:
             import wandb
-            if rank == 0:
+            if is_main_process:
                 wandb.init(
                     project=args.wandb_project,
                     name=args.wandb_run_name,
@@ -936,42 +1136,32 @@ def train_sequential(args):
             logger.warning("⚠️ wandb not installed, falling back to tensorboard")
             args.use_wandb = False
     
-    dataset_names = args.dataset if args.dataset else []
-    train_files = args.train_file if args.train_file else []
-    
-    # 모든 데이터 소스 리스트
-    all_sources = []
-    for ds in dataset_names:
-        all_sources.append(("hf", ds))
-    for f in train_files:
-        all_sources.append(("file", f))
-    
-    logger.info(f"📋 Processing {len(all_sources)} datasets sequentially:")
-    for i, (src_type, src_name) in enumerate(all_sources):
-        logger.info(f"  {i+1}. [{src_type}] {src_name}")
-    
-    # 토크나이저는 한 번만 로드 (모든 데이터셋에서 재사용)
-    logger.info("⏳ Loading tokenizer (once for all datasets)...")
-    logger.info("   (This may take 5-10s...)")
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path,
-        trust_remote_code=True,
-        use_fast=True,
-    )
-    logger.info(f"✓ Tokenizer loaded: {args.tokenizer_path}")
+    # ========================================================================
+    # STEP 4: 순차 학습 (각 토큰화된 데이터셋으로)
+    # ========================================================================
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("🎯 STEP 4: Sequential Training")
+        logger.info("="*80)
+    sys.stdout.flush()
     
     current_checkpoint = args.pretrained_model
     
-    for idx, (src_type, src_name) in enumerate(all_sources):
-        logger.info("="*80)
-        logger.info(f"🔄 [{idx+1}/{len(all_sources)}] Processing: {src_name}")
-        logger.info("="*80)
+    for idx, dataset_info in enumerate(tokenized_datasets_info):
+        if is_main_process:
+            logger.info("")
+            logger.info("="*80)
+            logger.info(f"🚀 Training [{idx+1}/{len(tokenized_datasets_info)}]: {dataset_info['name']}")
+            logger.info(f"   Samples: {dataset_info['num_samples']:,}")
+            logger.info("="*80)
+        sys.stdout.flush()
         
-        # 1. 모델 로드 (토크나이저는 재사용)
-        if idx == 0:
-            logger.info(f"🔄 Loading model from: {current_checkpoint or 'scratch'}")
-        else:
-            logger.info(f"🔄 Loading model from previous stage: {current_checkpoint}")
+        # 모델 로드 (토크나이저는 재사용)
+        if is_main_process:
+            if idx == 0:
+                logger.info(f"⏳ Loading model from: {current_checkpoint or 'scratch'}")
+            else:
+                logger.info(f"⏳ Resuming from: {current_checkpoint}")
         
         model, _ = setup_model_and_tokenizer(
             tokenizer_path=args.tokenizer_path,
@@ -982,12 +1172,114 @@ def train_sequential(args):
             use_bf16=args.bf16,
             use_fp16=args.fp16,
         )
-        logger.info(f"✓ Model loaded")
+        if is_main_process:
+            logger.info(f"✓ Model loaded")
         
-        # 2. 해당 데이터셋만 로드
-        if src_type == "hf":
-            dataset, text_column = load_pretrain_dataset(
-                dataset_names=[src_name],
+        # 토큰화된 데이터셋 로드
+        if is_main_process:
+            logger.info(f"📥 Loading tokenized dataset...")
+        
+        from datasets import Dataset as HFDataset
+        tokenized_dataset = HFDataset.load_from_disk(str(dataset_info['cache_path']))
+        
+        if is_main_process:
+            logger.info(f"✓ Loaded {len(tokenized_dataset):,} samples")
+        
+        # Data Collator
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=False,
+        )
+        
+        # Training Arguments
+        stage_output_dir = f"{args.output_dir}/stage_{idx+1}"
+        
+        training_args = TrainingArguments(
+            output_dir=stage_output_dir,
+            num_train_epochs=args.num_epochs,
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            warmup_steps=args.warmup_steps if idx == 0 else 100,
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+            save_total_limit=2,
+            bf16=args.bf16,
+            fp16=args.fp16,
+            gradient_checkpointing=args.gradient_checkpointing,
+            dataloader_num_workers=args.dataloader_num_workers,
+            remove_unused_columns=False,
+            report_to=["wandb"] if args.use_wandb else ["tensorboard"],
+            max_steps=args.max_steps if args.max_steps > 0 else -1,
+            save_safetensors=True,
+            dataloader_pin_memory=True,
+            dataloader_prefetch_factor=4,
+            dataloader_drop_last=True,
+            optim="adamw_torch_fused",
+            ddp_find_unused_parameters=False,
+            tf32=True,
+            group_by_length=False,
+            max_grad_norm=1.0,
+            gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
+        )
+        
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_dataset,
+            data_collator=data_collator,
+        )
+        
+        if is_main_process:
+            logger.info(f"🏃 Starting training...")
+        trainer.train()
+        
+        # 체크포인트 저장
+        checkpoint_path = f"{stage_output_dir}/checkpoint"
+        trainer.save_model(checkpoint_path)
+        
+        # DDP barrier
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        
+        # dtype 유지하며 저장 (rank 0만)
+        if is_main_process:
+            model_dtype = next(model.parameters()).dtype
+            if model_dtype in (torch.bfloat16, torch.float16):
+                logger.info(f"💾 Re-saving model in {model_dtype} format...")
+                model.save_pretrained(checkpoint_path, torch_dtype=model_dtype, safe_serialization=True)
+            logger.info(f"✅ Stage {idx+1} completed: {checkpoint_path}")
+        
+        # 다음 라운드를 위해 체크포인트 경로 업데이트
+        current_checkpoint = checkpoint_path
+        
+        # 메모리 해제
+        del model
+        del tokenized_dataset
+        del trainer
+        gc.collect()
+        
+        try:
+            torch.cuda.empty_cache()
+        except:
+            pass
+        
+        # DDP barrier
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+    
+    # 최종 완료
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("🎉 Sequential training completed!")
+        logger.info(f"📁 Final model: {current_checkpoint}")
+        logger.info("="*80)
+
+
+# ============================================================================
+# Main Train Function (Concatenated Mode)
+# ============================================================================
                 dataset_config=args.dataset_config if idx == 0 else None,
                 train_files=None,
                 text_column=args.text_column,
