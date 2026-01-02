@@ -190,6 +190,15 @@ export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
 # export HF_HOME="/path/to/cache"
 # export HF_DATASETS_CACHE="/path/to/datasets/cache"
 
+# HuggingFace 최적화 (8개 프로세스 동시 시작 시 캐시 경합 방지)
+export HF_DATASETS_OFFLINE=0  # 온라인 유지 (필요시 다운로드)
+export HF_HUB_DISABLE_TELEMETRY=1  # 텔레메트리 비활성화
+export TRANSFORMERS_OFFLINE=0  # 온라인 유지
+export TRANSFORMERS_NO_ADVISORY_WARNINGS=1  # 경고 메시지 최소화
+
+# Python 최적화 (import 속도 향상)
+export PYTHONDONTWRITEBYTECODE=1  # .pyc 파일 생성 안함 (SSD에서는 더 빠름)
+
 # ============================================================================
 # Print Configuration
 # ============================================================================

@@ -47,10 +47,15 @@ python train.py \
 """
 
 # Early debug print
-print("[DEBUG] Script started, importing modules...", flush=True)
+import os
+import sys
+
+# Check rank early
+rank = int(os.environ.get("RANK", 0))
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Script started, importing modules...", flush=True)
 
 import argparse
-import os
 import hashlib
 import time
 import gc
@@ -67,10 +72,12 @@ try:
 except ImportError:
     psutil = None  # Optional dependency
 
-print("[DEBUG] Importing torch...", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Importing torch...", flush=True)
 import torch
 
-print("[DEBUG] Importing transformers...", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Importing transformers...", flush=True)
 from transformers import (
     AutoTokenizer,
     Trainer,
@@ -78,22 +85,28 @@ from transformers import (
     DataCollatorForLanguageModeling,
 )
 
-print("[DEBUG] Importing datasets...", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Importing datasets...", flush=True)
 from datasets import load_dataset, disable_caching
 import datasets
 
-print("[DEBUG] Configuring datasets...", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Configuring datasets...", flush=True)
 # Enable memory-efficient settings for large datasets
 datasets.config.IN_MEMORY_MAX_SIZE = 0  # Force memory mapping (no in-memory)
 
-print("[DEBUG] Importing moai_llm...", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Importing moai_llm...", flush=True)
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.model import MoaiForCausalLM
 
-print("[DEBUG] Setting up logging...", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: Setting up logging...", flush=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
-print("[DEBUG] All imports complete!", flush=True)
+if rank == 0:
+    print(f"[DEBUG] Rank {rank}: All imports complete!", flush=True)
+    sys.stdout.flush()
 
 
 # ============================================================================
