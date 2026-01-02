@@ -260,11 +260,13 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     # DDP 환경에서는 rank 0만 데이터셋을 다운로드 및 변환
     # 다른 rank들은 최종 변환 결과만 로드
     if is_distributed:
+        # Path import (함수 내부에서 사용하기 위해)
+        from pathlib import Path as PathLib
         # 먼저 최종 데이터셋이 이미 존재하는지 확인
         cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
         cache_hash = hashlib.md5(f"{dataset_name}_{dataset_config}".encode()).hexdigest()[:16]
-        dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
-        filter_marker_path = Path(cache_home) / "datasets" / f".{cache_hash}_filtered.marker"
+        dataset_save_path = PathLib(cache_home) / "datasets" / f"{cache_hash}_final"
+        filter_marker_path = PathLib(cache_home) / "datasets" / f".{cache_hash}_filtered.marker"
         
         # 이미 처리된 데이터셋이 있으면 모든 rank가 로드 (재시작 시 안전)
         if dataset_save_path.exists() and filter_marker_path.exists():
@@ -341,11 +343,10 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 캐시만 로드
     if is_distributed:
         # 캐시 완료 마커 파일 경로 생성
-        from pathlib import Path
         cache_home = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
         config_str = f"{dataset_name}_{dataset_config}" if dataset_config else dataset_name
         cache_hash = hashlib.md5(config_str.encode()).hexdigest()[:16]
-        cache_marker = Path(cache_home) / "datasets" / f".{cache_hash}_converted.marker"
+        cache_marker = PathLib(cache_home) / "datasets" / f".{cache_hash}_converted.marker"
         
         if is_main_process:
             # rank 0만 데이터셋 변환 (멀티프로세스로 빠르게)
@@ -382,7 +383,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
             
             # 최종 결과를 디스크에 저장 (다른 rank들이 안전하게 로드할 수 있도록)
-            dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
+            dataset_save_path = PathLib(cache_home) / "datasets" / f"{cache_hash}_final"
             
             # 이미 저장된 파일이 있으면 건너뛰기 (속도 향상)
             if dataset_save_path.exists():
@@ -400,7 +401,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 logger.info(f"    [Rank 0] Dataset saved in {save_time:.1f}s")
             
             # 필터 완료 마커 생성
-            filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
+            filter_marker = PathLib(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
             filter_marker.touch()
             logger.info(f"    [Rank 0] Created filter marker: {filter_marker}")
             
@@ -419,7 +420,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             check_interval = 5
             
             # 필터 완료 마커 대기 (변환 마커는 건너뛰고 바로 필터 마커만 확인)
-            filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
+            filter_marker = PathLib(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
             logger.info(f"    [Rank {current_rank}] Waiting for rank 0 to complete all processing...")
             waited = 0
             while not filter_marker.exists() and waited < max_wait_time:
@@ -441,7 +442,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 time.sleep(2)
             
             # rank 0이 저장한 최종 데이터셋을 직접 로드 (캐시 충돌 없음!)
-            dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
+            dataset_save_path = PathLib(cache_home) / "datasets" / f"{cache_hash}_final"
             logger.info(f"    [Rank {current_rank}] Loading final dataset from: {dataset_save_path}")
             
             # 파일이 완전히 준비될 때까지 짧은 대기 (파일 시스템 동기화)
