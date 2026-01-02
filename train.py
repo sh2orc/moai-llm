@@ -947,21 +947,19 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
-                        # 이미 8개 GPU가 각각 프로세스이므로 추가 multiprocessing 불가
+                        # DDP 환경: 균형잡힌 배치 크기
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
                         
-                        logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
-                        logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
-                        logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
+                        logger.info(f"  [Rank 0] ⚡ Optimized batch tokenization (DDP mode)")
+                        logger.info(f"  [Rank 0]    Settings: batch_size=5000, writer_batch_size=50000")
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
                             batched=True,
-                            batch_size=100000,  # 큰 배치로 Fast Tokenizer 최대 활용
-                            num_proc=1,  # DDP 환경에서는 multiprocessing 불가
+                            batch_size=5000,  # 균형잡힌 배치 크기
+                            num_proc=1,
                             remove_columns=dataset["train"].column_names,
-                            load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                            writer_batch_size=200000,
+                            load_from_cache_file=False,
+                            writer_batch_size=50000,
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1075,17 +1073,16 @@ def train_sequential(args):
                     else:
                         # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                        logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
-                        logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
-                        logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
+                        logger.info(f"  [Rank 0] ⚡ Optimized batch tokenization (DDP mode)")
+                        logger.info(f"  [Rank 0]    Settings: batch_size=5000, writer_batch_size=50000")
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
                             batched=True,
-                            batch_size=100000,
-                            num_proc=1,  # DDP 환경에서는 multiprocessing 불가
+                            batch_size=5000,
+                            num_proc=1,
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=False,
-                            writer_batch_size=200000,
+                            writer_batch_size=50000,
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1360,19 +1357,18 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
+                    # DDP 환경: 중간 배치 크기로 균형 조정
                     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                    logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
-                    logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
-                    logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
+                    logger.info(f"  [Rank 0] ⚡ Optimized batch tokenization (DDP mode)")
+                    logger.info(f"  [Rank 0]    Settings: batch_size=5000, writer_batch_size=50000")
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
                         batched=True,
-                        batch_size=100000,
-                        num_proc=1,  # DDP 환경에서는 multiprocessing 불가
+                        batch_size=5000,
+                        num_proc=1,
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
-                        writer_batch_size=200000,
+                        writer_batch_size=50000,
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1485,19 +1481,18 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    # DDP 환경: 단일 프로세스 + Fast Tokenizer 내부 병렬화
+                    # DDP 환경: 중간 배치 크기로 균형 조정
                     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                    logger.info(f"  [Rank 0] ⚡ Fast Tokenizer with internal parallelization (DDP mode)")
-                    logger.info(f"  [Rank 0]    TOKENIZERS_PARALLELISM=true, num_proc=1")
-                    logger.info(f"  [Rank 0]    Settings: batch_size=100000, writer_batch_size=200000")
+                    logger.info(f"  [Rank 0] ⚡ Optimized batch tokenization (DDP mode)")
+                    logger.info(f"  [Rank 0]    Settings: batch_size=5000, writer_batch_size=50000")
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
-                        batch_size=100000,
-                        num_proc=1,  # DDP 환경에서는 multiprocessing 불가
+                        batch_size=5000,
+                        num_proc=1,
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
-                        writer_batch_size=200000,
+                        writer_batch_size=50000,
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
