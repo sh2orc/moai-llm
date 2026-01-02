@@ -311,22 +311,37 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
         
         return {"text": texts}
     
-    # 배치 처리로 변환 (빠름)
+    # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
+    # 배치 크기를 줄여서 프로세스당 메모리 사용량 감소
     converted = train_data.map(
         convert_batch,
         batched=True,
-        batch_size=1000,
-        num_proc=min(8, os.cpu_count() or 4),
+        batch_size=500,  # 1000 -> 500으로 감소 (프로세스당 메모리 사용량 감소)
+        num_proc=min(8, os.cpu_count() or 4),  # 병렬 처리 유지
         remove_columns=train_data.column_names,
         load_from_cache_file=True,  # Use cache to avoid re-tokenizing
         desc=f"Converting {dataset_name}",
     )
     
-    # 빈 텍스트 필터링
-    converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=4)
+    # 빈 텍스트 필터링 (병렬 처리 유지)
+    converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=min(4, os.cpu_count() or 2))
     
-    # 리스트로 변환
-    formatted_data = [{"text": t} for t in converted["text"]]
+    # 메모리 효율적 리스트 변환: 스트리밍 방식으로 처리
+    # 전체를 한 번에 메모리에 로드하지 않고 반복자 사용
+    logger.info(f"    Converting to list format (memory-efficient)...")
+    formatted_data = []
+    chunk_size = 50000  # 5만 개씩 처리하여 메모리 사용량 제한
+    
+    for i in range(0, len(converted), chunk_size):
+        end_idx = min(i + chunk_size, len(converted))
+        chunk = converted.select(range(i, end_idx))
+        chunk_data = [{"text": t} for t in chunk["text"]]
+        formatted_data.extend(chunk_data)
+        # 메모리 해제
+        del chunk, chunk_data
+        if i % (chunk_size * 10) == 0:  # 10 청크마다 가비지 컬렉션
+            import gc
+            gc.collect()
     
     logger.info(f"    → {len(formatted_data):,} samples")
     return formatted_data
