@@ -148,11 +148,23 @@ echo "  - Batch size: $DATASET_BATCH_SIZE"
 echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
 
 # ============================================================================
-# Tokenization Optimization (토크나이징 최적화) ⚡ NEW!
+# Tokenization Optimization (토크나이징 최적화) ⚡ v3.3!
 # ============================================================================
-# 토크나이징 처리 프로세스 수는 train.py에서 자동 설정 (최대 16)
-# 사용자가 더 많은 프로세스를 원하면 --num_proc 인자 사용
-echo "⚡ Tokenization optimized: auto-scaled up to 16 processes"
+# Rust 토크나이저 병렬화 활성화 (중요!)
+export TOKENIZERS_PARALLELISM=true
+
+# Python 멀티프로세싱 최적화
+export PYTHONUNBUFFERED=1
+
+# CPU affinity 최적화 (가능한 경우)
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+
+echo "⚡ Tokenization optimized:"
+echo "  - Processes: 16 (unlimited)"
+echo "  - Batch size: 20000 (4x increased)"
+echo "  - Writer batch: 50000"
+echo "  - Rust parallelism: ENABLED"
 
 # TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)
 export NVIDIA_TF32_OVERRIDE=1
@@ -233,7 +245,7 @@ torchrun \
     --packing \
     --sequential \
     --flash_attention \
-    --num_proc 4 \
+    --num_proc 16 \
     --dataloader_num_workers 8 \
     --logging_steps 10 \
     --save_steps 500 \

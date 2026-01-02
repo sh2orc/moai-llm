@@ -842,12 +842,12 @@ def train_sequential(args):
                     add_special_tokens=True,
                 )
             
-            # 토크나이징 최적화
-            tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
-            tokenize_batch_size = 5000  # 배치 크기 증가
-            tokenize_writer_batch = 20000  # I/O 최적화
+            # 토크나이징 최적화 - 제한 제거 및 배치 크기 증가
+            tokenize_num_proc = args.num_proc  # 제한 제거!
+            tokenize_batch_size = 20000  # 배치 크기 대폭 증가
+            tokenize_writer_batch = 50000  # I/O 최적화
             
-            logger.info(f"  Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+            logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
             
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
@@ -889,24 +889,24 @@ def train_sequential(args):
                     return_special_tokens_mask=True,
                 )
 
-            # 토크나이징 최적화: num_proc 증가 및 배치 크기 최적화
-            tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
-            tokenize_batch_size = 5000  # 배치 크기 증가
-            tokenize_writer_batch = 20000  # I/O 최적화
-            
-            logger.info(f"  Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
-            
-            tokenized_dataset = dataset["train"].map(
-                tokenize_function,
-                batched=True,
-                batch_size=tokenize_batch_size,
-                num_proc=tokenize_num_proc,
-                remove_columns=dataset["train"].column_names,
-                load_from_cache_file=True,  # Use cache to avoid re-tokenizing
-                writer_batch_size=tokenize_writer_batch,  # I/O 최적화
-                keep_in_memory=False,  # 메모리 맵 사용
-                desc="Tokenizing",
-            )
+        # 토크나이징 최적화 - 제한 제거 및 배치 크기 증가
+        tokenize_num_proc = args.num_proc  # 제한 제거!
+        tokenize_batch_size = 20000  # 배치 크기 대폭 증가
+        tokenize_writer_batch = 50000  # I/O 최적화
+        
+        logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        
+        tokenized_dataset = dataset["train"].map(
+            tokenize_function,
+            batched=True,
+            batch_size=tokenize_batch_size,
+            num_proc=tokenize_num_proc,
+            remove_columns=dataset["train"].column_names,
+            load_from_cache_file=True,  # Use cache to avoid re-tokenizing
+            writer_batch_size=tokenize_writer_batch,  # I/O 최적화
+            keep_in_memory=False,  # 메모리 맵 사용
+            desc="Tokenizing",
+        )
         
         # 원본 데이터셋 메모리 해제
         del dataset
@@ -1070,12 +1070,18 @@ def train(args):
                 add_special_tokens=True,
             )
         
-        # 토크나이징 최적화
-        tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
-        tokenize_batch_size = 5000  # 배치 크기 증가
-        tokenize_writer_batch = 20000  # I/O 최적화
+        # 토크나이징 최적화 - 제한 제거 및 배치 크기 증가
+        tokenize_num_proc = args.num_proc  # 제한 제거! 사용자 설정 그대로 사용
+        tokenize_batch_size = 20000  # 배치 크기 대폭 증가 (5000 → 20000)
+        tokenize_writer_batch = 50000  # I/O 최적화 (20000 → 50000)
         
-        logger.info(f"  Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        
+        # Rust 병렬화 활성화 (환경 변수 확인)
+        import os
+        tokenizers_parallel = os.getenv("TOKENIZERS_PARALLELISM", "true")
+        if tokenizers_parallel.lower() != "true":
+            logger.warning("  ⚠️  TOKENIZERS_PARALLELISM is not true - consider setting it for speed")
         
         tokenized_ds = dataset["train"].map(
             batch_tokenize,
@@ -1308,7 +1314,7 @@ def main():
     )
 
     # 기타
-    parser.add_argument("--num_proc", type=int, default=4, help="Number of processes for tokenization")
+    parser.add_argument("--num_proc", type=int, default=16, help="Number of processes for tokenization (increased for speed)")
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     
     # 추가 최적화 옵션

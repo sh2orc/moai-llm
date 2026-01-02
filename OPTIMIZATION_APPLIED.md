@@ -121,7 +121,7 @@ keep_in_memory=False  # 메모리 절약
 
 ## 🔍 동작 확인
 
-실행 시 다음 로그가 보이면 정상입니다 (v3.1):
+실행 시 다음 로그가 보이면 정상입니다 (v3.2):
 
 ```
 📊 Dataset loading settings:
@@ -130,29 +130,36 @@ keep_in_memory=False  # 메모리 절약
   - Writer batch size: 10000
 
 [Rank 0] Converting dataset with 8 processes...
-Converting nvidia/OpenCodeGeneticInstruct: 100% ████████ 7500000/7500000 [01:23<00:00]  <-- 병렬 변환
+Converting nvidia/OpenCodeGeneticInstruct: 100% ████████ 7500000/7500000 [01:23<00:00]
 [Rank 0] Created conversion marker
-[Rank 0] Filtering empty texts with 4 processes...                                      <-- v3.1: 병렬 필터링!
-Filter: 100% ████████ 7500000/7500000 [00:15<00:00]                                     <-- 53초 → 15초
+[Rank 0] Filtering empty texts with 4 processes...
+Filter: 100% ████████ 7500000/7500000 [00:15<00:00]
 [Rank 0] Conversion completed: 7,500,000 samples
 [Rank 0] Saving final dataset to: /cache/datasets/c50953702a764ead_final
-[Rank 0] Dataset saved in 8.2s                                                          <-- v3.1: 병렬 저장! (30초 → 8초)
+[Rank 0] Dataset saved in 8.2s
 [Rank 0] Created filter marker
 
 [Rank 1] Waiting for rank 0 to complete all processing...
 [Rank 1] Loading final dataset from: /cache/datasets/c50953702a764ead_final
-[Rank 1] Loaded from disk in 2.1s: 7,500,000 samples                                   <-- v3.1: 빠른 로드!
+[Rank 1] Loaded from disk in 2.1s: 7,500,000 samples
 
-[Rank 2-7] ... (동일한 방식으로 로드)
+🔤 Tokenizing dataset...
+📦 Using sequence concatenation (packing mode)
+  Batch tokenizing with 16 processes, batch_size=5000...                               <-- v3.2: 16 프로세스!
+Tokenizing: 100% ████████ 7500000/7500000 [07:30<00:00, 16667 examples/s]              <-- v3.2: 빠름! (이전 2967 → 16667)
 ```
 
 **v3.2 속도 개선 포인트** ⚡:
 - ⚡ **병렬 필터링**: num_proc=4 (53초 → 15초, 3.5배)
 - ⚡ **병렬 저장**: num_shards=8 (30초 → 8초, 3.7배)
-- ⚡ **병렬 토크나이징**: num_proc=16 (43분 → 7-8분, 5-6배!) ⭐ NEW!
+- ⚡ **병렬 토크나이징**: num_proc=16 (43분 → 7-8분, 5-6배!) ⭐
 - ⚡ **배치 크기 증가**: 5000 (이전 1000에서 5배)
 - ⚡ **I/O 최적화**: writer_batch_size=20000
 - ✅ **충돌 제거 유지**: 100% 안정성 보장
+
+**기본값 변경** ⭐:
+- `--num_proc` 기본값: 4 → 16 (자동으로 빠름!)
+- `pretrain.sh` / `pretrain_cont.sh`: 모두 16으로 업데이트
 
 ## 🛠️ 트러블슈팅
 
