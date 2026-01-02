@@ -251,8 +251,107 @@ def concatenate_sequences(
         })
     
     logger.info(f"✓ Created {len(chunks):,} chunks of max {max_seq_length} tokens each")
-    
+
     return chunks
+
+
+# ============================================================================
+# Optimized Tokenization Function
+# ============================================================================
+
+def tokenize_dataset(
+    dataset,
+    tokenizer,
+    text_column: str = "text",
+    max_seq_length: int = 2048,
+    packing: bool = False,
+    num_proc: int = None,
+):
+    """
+    최적화된 토큰화 함수 (모든 코드 경로에서 공유)
+
+    핵심 최적화:
+    - TOKENIZERS_PARALLELISM=false + num_proc=N (멀티프로세싱)
+    - 각 프로세스가 독립적으로 Fast Tokenizer 실행 = 최대 병렬화
+    - batch_size=50000 (IPC 오버헤드 최소화)
+
+    Args:
+        dataset: HuggingFace Dataset 객체
+        tokenizer: 토크나이저 (Fast Tokenizer 권장)
+        text_column: 텍스트 컬럼 이름
+        max_seq_length: 최대 시퀀스 길이
+        packing: True면 truncation 없이 토큰화 (나중에 concatenate)
+        num_proc: 프로세스 수 (None이면 자동 결정)
+
+    Returns:
+        토큰화된 Dataset 객체
+    """
+    import multiprocessing
+
+    # 최적 설정 자동 결정
+    cpu_count = multiprocessing.cpu_count()
+    if num_proc is None:
+        num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, cpu_count)))
+
+    batch_size = 50000
+    writer_batch_size = 100000
+
+    # 핵심: 멀티프로세싱 사용 시 반드시 false (CPU 쓰레싱 방지)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    # Fast Tokenizer 확인
+    if not tokenizer.is_fast:
+        logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
+
+    total_samples = len(dataset)
+    logger.info(f"🔤 Tokenization config:")
+    logger.info(f"   Samples: {total_samples:,}")
+    logger.info(f"   Processes: {num_proc}")
+    logger.info(f"   Batch size: {batch_size:,}")
+    logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
+    logger.info(f"   Expected speed: ~{num_proc * 7000:,} samples/sec")
+
+    start_time = time.time()
+
+    if packing:
+        # Packing 모드: truncation 없이 토큰화 (나중에 concatenate)
+        def batch_tokenize(examples):
+            return tokenizer(
+                examples[text_column],
+                truncation=False,
+                padding=False,
+                add_special_tokens=True,
+            )
+    else:
+        # 일반 모드: truncation 적용
+        def batch_tokenize(examples):
+            return tokenizer(
+                examples[text_column],
+                truncation=True,
+                max_length=max_seq_length,
+                padding=False,
+            )
+
+    tokenized = dataset.map(
+        batch_tokenize,
+        batched=True,
+        batch_size=batch_size,
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+        load_from_cache_file=False,
+        writer_batch_size=writer_batch_size,
+        keep_in_memory=False,
+        desc=f"Tokenizing ({num_proc} procs)",
+    )
+
+    elapsed = time.time() - start_time
+    speed = total_samples / elapsed if elapsed > 0 else 0
+    logger.info(f"✅ Tokenization completed:")
+    logger.info(f"   Time: {elapsed/60:.1f} min")
+    logger.info(f"   Speed: {speed:,.0f} samples/sec")
+    logger.info(f"   Output: {len(tokenized):,} samples")
+
+    return tokenized
 
 
 # ============================================================================
@@ -1013,59 +1112,27 @@ def train_sequential(args):
                 tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
             else:
-                # 캐시가 없으면 토큰화
-                import multiprocessing
-                import time
-                
-                num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, multiprocessing.cpu_count())))
-                
-                logger.info(f"  🔤 Tokenizing with {num_proc} processes (each with Fast Tokenizer)...")
+                # 캐시가 없으면 토큰화 (최적화된 통합 함수 사용)
+                logger.info(f"  🔤 Tokenizing dataset...")
                 sys.stdout.flush()
-                
+
+                # 통합 tokenize_dataset() 함수 사용
+                tokenized_ds = tokenize_dataset(
+                    dataset=dataset["train"],
+                    tokenizer=tokenizer,
+                    text_column=text_column,
+                    max_seq_length=args.max_seq_length,
+                    packing=args.packing,
+                )
+
                 if args.packing:
-                    def batch_tokenize(examples):
-                        return tokenizer(
-                            examples[text_column],
-                            truncation=False,
-                            padding=False,
-                            add_special_tokens=True,
-                        )
-                    
-                    train_data = dataset["train"]
-                    total_samples = len(train_data)
-                    
-                    logger.info(f"  ⚡ Multi-Process Tokenization")
-                    logger.info(f"     Total samples: {total_samples:,}")
-                    logger.info(f"     Processes: {num_proc}")
-                    logger.info(f"     Batch size per process: 10,000")
-                    sys.stdout.flush()
-                    
-                    start_time = time.time()
-                    
-                    tokenized_ds = train_data.map(
-                        batch_tokenize,
-                        batched=True,
-                        batch_size=10000,  # 각 프로세스당 배치 크기
-                        num_proc=num_proc,  # 48개 프로세스!
-                        remove_columns=train_data.column_names,
-                        load_from_cache_file=False,
-                        writer_batch_size=50000,
-                        keep_in_memory=False,
-                        desc=f"Tokenizing (num_proc={num_proc})",
-                    )
-                    
-                    total_time = time.time() - start_time
-                    logger.info(f"  ✅ Tokenization completed in {total_time/60:.1f} minutes")
-                    logger.info(f"     Speed: {total_samples/total_time:.0f} samples/s")
-                    sys.stdout.flush()
-                    
-                    # Packing
+                    # Packing: concatenate sequences
                     logger.info(f"  📦 Packing sequences...")
                     sys.stdout.flush()
                     tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
                     del tokenized_ds
                     gc.collect()
-                    
+
                     concatenated_chunks = concatenate_sequences(
                         tokenized_sequences=tokenized_list,
                         max_seq_length=args.max_seq_length,
@@ -1073,42 +1140,12 @@ def train_sequential(args):
                     )
                     del tokenized_list
                     gc.collect()
-                    
+
                     tokenized_dataset = HFDataset.from_list(concatenated_chunks)
                     del concatenated_chunks
                     gc.collect()
                 else:
-                    def tokenize_function(examples):
-                        return tokenizer(
-                            examples[text_column],
-                            truncation=True,
-                            max_length=args.max_seq_length,
-                            padding=False,
-                            return_special_tokens_mask=True,
-                        )
-                    
-                    # ⚡ 최적화: num_proc=1 + Fast Tokenizer 내부 병렬화 (가장 빠름!)
-                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # Fast Tokenizer 병렬화 활성화
-                    import multiprocessing
-                    cpu_count = multiprocessing.cpu_count()
-                    
-                    # 최적 프로세스 수 계산
-                    optimal_num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, multiprocessing.cpu_count())))
-                    
-                    logger.info(f"  ⚡ Parallel Tokenization: {optimal_num_proc} processes ({cpu_count} CPUs)")
-                    logger.info(f"     Strategy: Each process runs tokenizer independently → FAST!")
-                    
-                    tokenized_dataset = dataset["train"].map(
-                        tokenize_function,
-                        batched=True,
-                        batch_size=5000,
-                        num_proc=optimal_num_proc,  # ⚡ 48개 프로세스 동시 실행!
-                        remove_columns=dataset["train"].column_names,
-                        load_from_cache_file=False,
-                        writer_batch_size=100000,
-                        keep_in_memory=False,
-                        desc=f"Tokenizing {src_name} (num_proc={optimal_num_proc})",
-                    )
+                    tokenized_dataset = tokenized_ds
                 
                 # 캐시 저장
                 logger.info(f"  💾 Saving tokenized dataset...")
@@ -1504,86 +1541,32 @@ def train(args):
         else:
             logger.info(f"✅ [Rank {rank}] Loaded {len(tokenized_dataset):,} samples from cache")
     elif is_main_process:
-        # Packing 모드: 시퀀스 연결 방식 사용
+        # 통합 tokenize_dataset() 함수 사용
+        tokenized_ds = tokenize_dataset(
+            dataset=dataset["train"],
+            tokenizer=tokenizer,
+            text_column=text_column,
+            max_seq_length=args.max_seq_length,
+            packing=args.packing,
+        )
+
         if args.packing:
-            logger.info(f"📦 Using sequence concatenation (packing mode)")
-            
-            # 배치 토큰화
-            def batch_tokenize(examples):
-                return tokenizer(
-                    examples[text_column],
-                    truncation=False,
-                    padding=False,
-                    add_special_tokens=True,
-                )
-            
-            # Multiprocessing 사용 (DDP 전이므로 자유롭게!)
-            os.environ["TOKENIZERS_PARALLELISM"] = "false"  # datasets가 multiprocessing 시 강제
-            import multiprocessing
-            cpu_count = multiprocessing.cpu_count()
-            optimal_num_proc = min(32, max(16, cpu_count // 6))
-            
-            logger.info(f"⚡ Multiprocessing tokenization: {optimal_num_proc} processes")
-            logger.info(f"   CPU cores: {cpu_count}, batch_size=50000")
-            logger.info(f"   Expected time: {len(dataset['train']) / (optimal_num_proc * 7000) / 60:.1f} minutes")
-            
-            tokenized_ds = dataset["train"].map(
-                batch_tokenize,
-                batched=True,
-                batch_size=50000,
-                num_proc=optimal_num_proc,
-                remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,
-                writer_batch_size=100000,
-                keep_in_memory=False,
-                desc="Tokenizing",
-            )
-            
+            # Packing: concatenate sequences
             logger.info("📦 Packing sequences...")
             tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
             del tokenized_ds
-            
+
             concatenated_chunks = concatenate_sequences(
                 tokenized_sequences=tokenized_list,
                 max_seq_length=args.max_seq_length,
                 eos_token_id=tokenizer.eos_token_id,
             )
             del tokenized_list
-            
-            from datasets import Dataset as HFDataset
+
             tokenized_dataset = HFDataset.from_list(concatenated_chunks)
             del concatenated_chunks
-            
         else:
-            # 일반 mode: truncation
-            def tokenize_function(examples):
-                return tokenizer(
-                    examples[text_column],
-                    truncation=True,
-                    max_length=args.max_seq_length,
-                    padding=False,
-                    return_special_tokens_mask=True,
-                )
-            
-            os.environ["TOKENIZERS_PARALLELISM"] = "false"
-            import multiprocessing
-            cpu_count = multiprocessing.cpu_count()
-            optimal_num_proc = min(32, max(16, cpu_count // 6))
-            
-            logger.info(f"⚡ Multiprocessing tokenization: {optimal_num_proc} processes")
-            logger.info(f"   CPU cores: {cpu_count}, batch_size=50000")
-            
-            tokenized_dataset = dataset["train"].map(
-                tokenize_function,
-                batched=True,
-                batch_size=50000,
-                num_proc=optimal_num_proc,
-                remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,
-                writer_batch_size=100000,
-                keep_in_memory=False,
-                desc="Tokenizing",
-            )
+            tokenized_dataset = tokenized_ds
         
         # 캐시 저장 (rank 0만)
         logger.info(f"💾 [Rank 0] Saving tokenized dataset to: {tokenized_cache_path}")
