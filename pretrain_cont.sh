@@ -70,7 +70,7 @@ OUTPUT_DIR="outputs/moai-${CONFIG_SIZE}"
 # 여러 HuggingFace 데이터셋 사용 (콤마 없이!)
 # config가 필요한 경우: "dataset_name:config_name" 형식 사용
 DATASETS=(
-    "nvidia/OpenCodeGeneticInstruct"
+    "nvidia/OpenCodeGeneticInstruct:qwen2.5-32b-instruct"
     "BCCard/BCAI-Finance-Kor-1862K"
     "HAERAE-HUB/KOREAN-WEBTEXT"
 )
