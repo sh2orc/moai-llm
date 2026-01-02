@@ -46,91 +46,129 @@ python train.py \
         --output_dir outputs/sft
 """
 
-# Early debug print
+# Early initialization
 import os
 import sys
 import time as time_module
+from pathlib import Path as PathType
 
 # Check rank early
 rank = int(os.environ.get("RANK", 0))
 world_size = int(os.environ.get("WORLD_SIZE", 1))
+is_main = (rank == 0)
 
-if rank == 0:
-    print(f"[DEBUG] Rank 0: Script started (world_size={world_size})", flush=True)
-    print(f"[DEBUG] Rank 0: Importing basic modules...", flush=True)
+# 동기화 마커 파일
+import_marker = PathType("/tmp/.moai_import_done")
+
+if is_main:
+    # Rank 0: 먼저 import
+    print(f"[IMPORT] Rank 0: Importing modules (world_size={world_size})...", flush=True)
+    sys.stdout.flush()
+    
+    # 이전 마커 제거
+    if import_marker.exists():
+        import_marker.unlink()
+    
+    import argparse
+    import hashlib
+    import time
+    import gc
+    import logging
+    from pathlib import Path
+    from typing import Optional, Dict, Any
+    
+    try:
+        import orjson as json
+    except ImportError:
+        import json
+    
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    
+    print(f"[IMPORT] Rank 0: Importing torch...", flush=True)
+    sys.stdout.flush()
+    import torch
+    
+    print(f"[IMPORT] Rank 0: Importing transformers...", flush=True)
+    sys.stdout.flush()
+    from transformers import (
+        AutoTokenizer,
+        Trainer,
+        TrainingArguments,
+        DataCollatorForLanguageModeling,
+    )
+    
+    print(f"[IMPORT] Rank 0: Importing datasets...", flush=True)
+    sys.stdout.flush()
+    from datasets import load_dataset, disable_caching
+    import datasets
+    datasets.config.IN_MEMORY_MAX_SIZE = 0
+    
+    print(f"[IMPORT] Rank 0: Importing moai_llm...", flush=True)
+    sys.stdout.flush()
+    from moai_llm.config import MoaiConfig
+    from moai_llm.modeling.model import MoaiForCausalLM
+    
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+    logger = logging.getLogger(__name__)
+    
+    # 마커 생성 (다른 rank들이 import 시작 가능)
+    import_marker.touch()
+    print(f"[IMPORT] Rank 0: ✅ All modules imported!", flush=True)
+    sys.stdout.flush()
 else:
-    # 다른 rank들은 rank 0이 초기화 완료할 때까지 약간 대기
-    time_module.sleep(2 + rank * 0.5)  # Rank별로 약간씩 지연
-    print(f"[DEBUG] Rank {rank}: Starting after delay...", flush=True)
-
-sys.stdout.flush()
-
-import argparse
-import hashlib
-import time
-import gc
-import logging
-from pathlib import Path
-from typing import Optional, Dict, Any
-try:
-    import orjson as json  # Rust-based, 10-50x faster
-except ImportError:
-    import json  # Fallback to standard json
-
-try:
-    import psutil  # For memory monitoring
-except ImportError:
-    psutil = None  # Optional dependency
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: Importing torch...", flush=True)
+    # 다른 rank들: 마커 대기
+    print(f"[IMPORT] Rank {rank}: Waiting for rank 0...", flush=True)
     sys.stdout.flush()
-
-import torch
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: ✓ Torch imported", flush=True)
-    print(f"[DEBUG] Rank 0: Importing transformers...", flush=True)
-    sys.stdout.flush()
-
-from transformers import (
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-    DataCollatorForLanguageModeling,
-)
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: ✓ Transformers imported", flush=True)
-    print(f"[DEBUG] Rank 0: Importing datasets...", flush=True)
-    sys.stdout.flush()
-
-from datasets import load_dataset, disable_caching
-import datasets
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: ✓ Datasets imported", flush=True)
-    sys.stdout.flush()
-
-# Enable memory-efficient settings for large datasets
-datasets.config.IN_MEMORY_MAX_SIZE = 0  # Force memory mapping (no in-memory)
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: Importing moai_llm...", flush=True)
-    sys.stdout.flush()
-
-from moai_llm.config import MoaiConfig
-from moai_llm.modeling.model import MoaiForCausalLM
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: ✓ Moai_llm imported", flush=True)
-    sys.stdout.flush()
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-if rank == 0:
-    print(f"[DEBUG] Rank 0: ✅ All imports complete!", flush=True)
+    
+    max_wait = 300  # 5분
+    waited = 0
+    while not import_marker.exists() and waited < max_wait:
+        time_module.sleep(0.5)
+        waited += 0.5
+    
+    if not import_marker.exists():
+        print(f"[IMPORT] Rank {rank}: Timeout waiting for rank 0!", flush=True)
+        sys.exit(1)
+    
+    # 이제 안전하게 import
+    import argparse
+    import hashlib
+    import time
+    import gc
+    import logging
+    from pathlib import Path
+    from typing import Optional, Dict, Any
+    
+    try:
+        import orjson as json
+    except ImportError:
+        import json
+    
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    
+    import torch
+    from transformers import (
+        AutoTokenizer,
+        Trainer,
+        TrainingArguments,
+        DataCollatorForLanguageModeling,
+    )
+    from datasets import load_dataset, disable_caching
+    import datasets
+    datasets.config.IN_MEMORY_MAX_SIZE = 0
+    from moai_llm.config import MoaiConfig
+    from moai_llm.modeling.model import MoaiForCausalLM
+    
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+    logger = logging.getLogger(__name__)
+    
+    print(f"[IMPORT] Rank {rank}: ✅ Modules imported!", flush=True)
     sys.stdout.flush()
 
 
@@ -1804,21 +1842,22 @@ def main():
 
 
 if __name__ == "__main__":
-    # 즉시 로그 출력 (사용자가 프로그램이 실행 중임을 알 수 있도록)
+    # 가장 먼저 출력 (torchrun이 프로세스를 제대로 시작했는지 확인)
     import sys
     import os
     
-    rank = int(os.environ.get("RANK", 0))
+    # 즉시 출력
+    rank = int(os.environ.get("RANK", -1))
+    print(f"[INIT] Rank {rank}: Python script started!", flush=True)
+    sys.stdout.flush()
+    
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     
     if rank == 0:
         print("="*80, flush=True)
         print("🚀 MOAI-LLM Training Starting...", flush=True)
-        print("⏳ Initializing Python environment and loading libraries...", flush=True)
         print(f"🌐 World size: {world_size} GPUs", flush=True)
         print("="*80, flush=True)
-    else:
-        print(f"[Rank {rank}] Initializing...", flush=True)
     
     sys.stdout.flush()
     main()

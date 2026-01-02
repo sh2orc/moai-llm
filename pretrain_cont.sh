@@ -200,6 +200,10 @@ export PYTHONDONTWRITEBYTECODE=1  # .pyc 파일 생성 안함 (SSD에서는 더 
 export CUDA_MODULE_LOADING=LAZY  # CUDA 모듈 지연 로딩
 export TORCH_CUDA_ARCH_LIST="8.0"  # A40은 Ampere (8.0), 불필요한 아키텍처 스킵
 
+# 추가 CUDA 최적화 (초기화 속도 향상)
+export CUDA_DEVICE_ORDER=PCI_BUS_ID  # GPU 순서 고정
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"  # 메모리 할당 최적화
+
 # ============================================================================
 # Print Configuration
 # ============================================================================
