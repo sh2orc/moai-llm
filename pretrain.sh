@@ -162,7 +162,7 @@ export OMP_PLACES=cores
 
 echo "⚡ Tokenization optimized:"
 echo "  - Processes: 16 (unlimited)"
-echo "  - Batch size: 20000 (4x increased)"
+echo "  - Batch size: 10000 (balanced for stability)"
 echo "  - Writer batch: 50000"
 echo "  - Rust parallelism: ENABLED"
 
