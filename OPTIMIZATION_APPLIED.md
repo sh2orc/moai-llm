@@ -159,16 +159,17 @@ Tokenizing: 100% ████████ 7500000/7500000 [07:30<00:00, 16667 ex
 - ⚡ **병렬 필터링**: num_proc=4 (53초 → 15초, 3.5배)
 - ⚡ **병렬 저장**: num_shards=8 (30초 → 8초, 3.7배)
 - ⚡⚡⚡ **토크나이징 극대화**: 
-  - **num_proc 제한 제거**: 16 제한 → 무제한 (사용자 설정 그대로)
+  - **DDP 최적화**: num_proc를 world_size로 나눔 (CPU 과부하 방지!)
+  - **예**: 8 GPU × 4 프로세스 = 32 총 프로세스 (균형!)
   - **batch_size 최적화**: 5000 → 10000 (2배, 안정성 보장!)
   - **writer_batch 극대화**: 20000 → 50000 (2.5배!)
   - **Rust 병렬화**: TOKENIZERS_PARALLELISM=true
   - **CPU affinity**: OMP_PROC_BIND=close
-  - **결과**: 27분 → 4-5분 (5-6배 빠름!) ⭐⭐⭐
+  - **결과**: 27분 → 8-10분 (3배 빠름!) ⭐⭐⭐
 - ✅ **충돌 제거 유지**: 100% 안정성 보장
 
 **v3.3 주요 변경사항** ⭐⭐⭐:
-- `train.py`: num_proc 16 제한 제거 → 무제한
+- `train.py`: num_proc를 world_size로 나눔 (DDP 최적화!)
 - `train.py`: batch_size 5000 → 10000 (안정성 보장)
 - `train.py`: writer_batch 20000 → 50000
 - `pretrain.sh/pretrain_cont.sh`: TOKENIZERS_PARALLELISM=true 명시
