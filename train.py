@@ -461,8 +461,9 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             logger.info(f"    [Rank 0] Created conversion marker: {cache_marker}")
             
             # 빈 텍스트 필터링 (병렬 처리로 빠르게)
-            filter_num_proc = min(dataset_num_proc // 2, 4)
-            logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
+            filter_num_proc = None if dataset_num_proc is None else min(dataset_num_proc // 2, 4)
+            _filter_str = "single thread" if filter_num_proc is None else f"{filter_num_proc} processes"
+            logger.info(f"    [Rank 0] Filtering empty texts with {_filter_str}...")
             converted = converted.filter(
                 lambda x: len(x["text"]) > 0, 
                 num_proc=filter_num_proc,  # 병렬 처리로 빠르게
@@ -570,7 +571,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         )
         
         logger.info(f"    Filtering empty texts...")
-        filter_num_proc = min(dataset_num_proc // 2, 4)
+        filter_num_proc = None if dataset_num_proc is None else min(dataset_num_proc // 2, 4)
         converted = converted.filter(
             lambda x: len(x["text"]) > 0, 
             num_proc=filter_num_proc,
