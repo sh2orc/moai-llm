@@ -951,10 +951,10 @@ def train_sequential(args):
                         # 각 프로세스에서 Fast Tokenizer의 Rust 병렬화 활성화
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
                         
-                        # 최적 프로세스 수: CPU 코어의 1/4~1/6 정도
+                        # 최적 프로세스 수: CPU 코어의 1/6 정도 (96코어 → 16프로세스)
                         import multiprocessing
                         cpu_count = multiprocessing.cpu_count()
-                        optimal_num_proc = min(8, max(4, cpu_count // 6))
+                        optimal_num_proc = min(16, max(8, cpu_count // 6))
                         
                         logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
                         logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
@@ -1016,7 +1016,7 @@ def train_sequential(args):
                 # 하이브리드: Fast Tokenizer + Multiprocessing
                 os.environ["TOKENIZERS_PARALLELISM"] = "true"
                 import multiprocessing
-                optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                optimal_num_proc = min(16, max(8, multiprocessing.cpu_count() // 6))
                 logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
                 logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
                 tokenized_ds = dataset["train"].map(
@@ -1140,7 +1140,7 @@ def train_sequential(args):
                 # 하이브리드: Fast Tokenizer + Multiprocessing
                 os.environ["TOKENIZERS_PARALLELISM"] = "true"
                 import multiprocessing
-                optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                optimal_num_proc = min(16, max(8, multiprocessing.cpu_count() // 6))
                 logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
                 logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
                 tokenized_dataset = dataset["train"].map(
