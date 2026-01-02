@@ -842,17 +842,22 @@ def train_sequential(args):
                     add_special_tokens=True,
                 )
             
-            logger.info("  Batch tokenizing...")
-            # 버퍼 공간 부족 방지를 위해 num_proc 제한
-            # TOKENIZERS_PARALLELISM=true가 설정되어 있어 Rust 레벨에서 병렬화됨
-            safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
+            # 토크나이징 최적화
+            tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
+            tokenize_batch_size = 5000  # 배치 크기 증가
+            tokenize_writer_batch = 20000  # I/O 최적화
+            
+            logger.info(f"  Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+            
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
-                batch_size=1000,
-                num_proc=safe_num_proc,
+                batch_size=tokenize_batch_size,
+                num_proc=tokenize_num_proc,
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,  # Use cache to avoid re-tokenizing
+                writer_batch_size=tokenize_writer_batch,  # I/O 최적화
+                keep_in_memory=False,  # 메모리 맵 사용
                 desc="Tokenizing",
             )
             
@@ -884,15 +889,22 @@ def train_sequential(args):
                     return_special_tokens_mask=True,
                 )
 
-            # 버퍼 공간 부족 방지를 위해 num_proc 제한
-            safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
+            # 토크나이징 최적화: num_proc 증가 및 배치 크기 최적화
+            tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
+            tokenize_batch_size = 5000  # 배치 크기 증가
+            tokenize_writer_batch = 20000  # I/O 최적화
+            
+            logger.info(f"  Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+            
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
-                batch_size=1000,
-                num_proc=safe_num_proc,
+                batch_size=tokenize_batch_size,
+                num_proc=tokenize_num_proc,
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,  # Use cache to avoid re-tokenizing
+                writer_batch_size=tokenize_writer_batch,  # I/O 최적화
+                keep_in_memory=False,  # 메모리 맵 사용
                 desc="Tokenizing",
             )
         
@@ -1058,16 +1070,22 @@ def train(args):
                 add_special_tokens=True,
             )
         
-        logger.info("  Batch tokenizing...")
-        # 버퍼 공간 부족 방지를 위해 num_proc 제한
-        safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
+        # 토크나이징 최적화
+        tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
+        tokenize_batch_size = 5000  # 배치 크기 증가
+        tokenize_writer_batch = 20000  # I/O 최적화
+        
+        logger.info(f"  Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        
         tokenized_ds = dataset["train"].map(
             batch_tokenize,
             batched=True,
-            batch_size=1000,
-            num_proc=safe_num_proc,
+            batch_size=tokenize_batch_size,
+            num_proc=tokenize_num_proc,
             remove_columns=dataset["train"].column_names,
             load_from_cache_file=True,  # Use cache to avoid re-tokenizing
+            writer_batch_size=tokenize_writer_batch,  # I/O 최적화
+            keep_in_memory=False,  # 메모리 맵 사용
             desc="Tokenizing",
         )
         
@@ -1101,15 +1119,22 @@ def train(args):
                 return_special_tokens_mask=True,
             )
 
-        # 버퍼 공간 부족 방지를 위해 num_proc 제한
-        safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
+        # 토크나이징 최적화: num_proc 증가 및 배치 크기 최적화
+        tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
+        tokenize_batch_size = 5000  # 배치 크기 증가 (1000 → 5000)
+        tokenize_writer_batch = 20000  # I/O 최적화
+        
+        logger.info(f"  Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        
         tokenized_dataset = dataset["train"].map(
             tokenize_function,
             batched=True,
-            batch_size=1000,
-            num_proc=safe_num_proc,
+            batch_size=tokenize_batch_size,
+            num_proc=tokenize_num_proc,
             remove_columns=dataset["train"].column_names,
             load_from_cache_file=True,  # Use cache to avoid re-tokenizing
+            writer_batch_size=tokenize_writer_batch,  # I/O 최적화
+            keep_in_memory=False,  # 메모리 맵 사용
             desc="Tokenizing",
         )
 

@@ -142,6 +142,13 @@ echo "📊 Dataset loading settings:"
 echo "  - Parallel processes: $DATASET_NUM_PROC"
 echo "  - Batch size: $DATASET_BATCH_SIZE"
 echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
+
+# ============================================================================
+# Tokenization Optimization (토크나이징 최적화) ⚡ NEW!
+# ============================================================================
+# 토크나이징 처리 프로세스 수는 train.py에서 자동 설정 (최대 16)
+# 사용자가 더 많은 프로세스를 원하면 --num_proc 인자 사용
+echo "⚡ Tokenization optimized: auto-scaled up to 16 processes"
 export MKL_NUM_THREADS=8
 
 # TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)

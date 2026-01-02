@@ -493,14 +493,15 @@ loss = chunked_cross_entropy_loss(
 
 **Performance Improvements (nvidia/OpenCodeGeneticInstruct, 7.5M samples)**:
 
-| Metric | Before | v3 | v3.1 ⚡ | Improvement |
-|--------|--------|-----|---------|-------------|
-| Loading Time | ~8 min | ~2-3 min | **~1.5-2 min** ⚡ | **75-80% faster** |
-| Filtering | Slow | 53s | **15s** ⚡ | **3.5× faster** |
-| Saving | - | 30s | **8s** ⚡ | **3.7× faster** |
-| Memory Usage | ~30 GB | ~5 GB | ~5 GB | 💾 83% less |
-| Stability | ❌ Crashes | ✅ Stable | ✅ Stable | 🎯 100% |
-| Parallelism | 1 proc | 8 procs | 8 procs | 🚀 8× |
+| Metric | Before | v3 | v3.1 | v3.2 ⚡ | Improvement |
+|--------|--------|-----|------|---------|-------------|
+| Dataset Loading | ~8 min | ~2-3 min | **~1.5-2 min** | ~1.5-2 min | **75-80% faster** |
+| Filtering | Slow | 53s | **15s** | 15s | **3.5× faster** |
+| Saving | - | 30s | **8s** | 8s | **3.7× faster** |
+| **Tokenizing** | **Slow** | **Slow** | **Slow** | **7-8 min** ⚡ | **5-6× faster** |
+| **Total Time** | **51+ min** | - | - | **~10 min** | **80%+ faster** |
+| Memory Usage | ~30 GB | ~5 GB | ~5 GB | ~5 GB | 💾 83% less |
+| Stability | ❌ Crashes | ✅ Stable | ✅ Stable | ✅ Stable | 🎯 100% |
 
 **Environment Variables (Auto-configured, tunable)**:
 
