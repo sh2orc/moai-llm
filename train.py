@@ -1008,100 +1008,112 @@ def train_sequential(args):
         from datasets import Dataset as HFDataset
         
         if tokenized_cache_path.exists() and tokenized_marker.exists():
+            # 캐시가 있으면 모든 rank가 로드
             if is_main_process:
                 logger.info(f"  ✅ Loading cached tokenized dataset")
             tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-        elif is_main_process:
-            # Rank 0만 토큰화
-            logger.info(f"  🔤 Tokenizing with multiprocessing...")
-            
-            if args.packing:
-                def batch_tokenize(examples):
-                    return tokenizer(
-                        examples[text_column],
-                        truncation=False,
-                        padding=False,
-                        add_special_tokens=True,
-                    )
-                
-                os.environ["TOKENIZERS_PARALLELISM"] = "false"
-                import multiprocessing
-                cpu_count = multiprocessing.cpu_count()
-                optimal_num_proc = min(32, max(16, cpu_count // 6))
-                
-                logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes, batch_size=50000")
-                
-                tokenized_ds = dataset["train"].map(
-                    batch_tokenize,
-                    batched=True,
-                    batch_size=50000,
-                    num_proc=optimal_num_proc,
-                    remove_columns=dataset["train"].column_names,
-                    load_from_cache_file=False,
-                    writer_batch_size=100000,
-                    keep_in_memory=False,
-                    desc=f"Tokenizing {src_name}",
-                )
-                
-                logger.info(f"  📦 Packing sequences...")
-                tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
-                del tokenized_ds
-                
-                concatenated_chunks = concatenate_sequences(
-                    tokenized_sequences=tokenized_list,
-                    max_seq_length=args.max_seq_length,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-                del tokenized_list
-                
-                tokenized_dataset = HFDataset.from_list(concatenated_chunks)
-                del concatenated_chunks
-            else:
-                def tokenize_function(examples):
-                    return tokenizer(
-                        examples[text_column],
-                        truncation=True,
-                        max_length=args.max_seq_length,
-                        padding=False,
-                        return_special_tokens_mask=True,
-                    )
-                
-                os.environ["TOKENIZERS_PARALLELISM"] = "false"
-                import multiprocessing
-                cpu_count = multiprocessing.cpu_count()
-                optimal_num_proc = min(32, max(16, cpu_count // 6))
-                
-                logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes")
-                
-                tokenized_dataset = dataset["train"].map(
-                    tokenize_function,
-                    batched=True,
-                    batch_size=50000,
-                    num_proc=optimal_num_proc,
-                    remove_columns=dataset["train"].column_names,
-                    load_from_cache_file=False,
-                    writer_batch_size=100000,
-                    keep_in_memory=False,
-                    desc=f"Tokenizing {src_name}",
-                )
-            
-            # 캐시 저장
-            logger.info(f"  💾 Saving tokenized dataset...")
-            tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
-            tokenized_marker.touch()
-            logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples")
+            if is_main_process:
+                logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
         else:
-            # 다른 rank는 마커 대기
-            max_wait = 7200
-            waited = 0
-            while not tokenized_marker.exists() and waited < max_wait:
-                time_module.sleep(5)
-                waited += 5
-            
-            if not tokenized_marker.exists():
-                raise TimeoutError(f"Rank {rank}: Tokenizing timeout")
-            
-            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+            # 캐시가 없으면 Rank 0만 토큰화, 나머지는 대기
+            if is_main_process:
+                logger.info(f"  🔤 Tokenizing with multiprocessing...")
+                
+                if args.packing:
+                    def batch_tokenize(examples):
+                        return tokenizer(
+                            examples[text_column],
+                            truncation=False,
+                            padding=False,
+                            add_special_tokens=True,
+                        )
+                    
+                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    import multiprocessing
+                    cpu_count = multiprocessing.cpu_count()
+                    # CPU 많으면 더 공격적으로 사용 (48 cores → 38 proc, 96 cores → 48 proc)
+                    optimal_num_proc = min(48, max(16, int(cpu_count * 0.8)))
+                    
+                    logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes (from {cpu_count} CPUs), batch_size=50000")
+                    
+                    tokenized_ds = dataset["train"].map(
+                        batch_tokenize,
+                        batched=True,
+                        batch_size=50000,
+                        num_proc=optimal_num_proc,
+                        remove_columns=dataset["train"].column_names,
+                        load_from_cache_file=False,
+                        writer_batch_size=100000,
+                        keep_in_memory=False,
+                        desc=f"Tokenizing {src_name}",
+                    )
+                    
+                    logger.info(f"  📦 Packing sequences...")
+                    tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+                    del tokenized_ds
+                    
+                    concatenated_chunks = concatenate_sequences(
+                        tokenized_sequences=tokenized_list,
+                        max_seq_length=args.max_seq_length,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                    del tokenized_list
+                    
+                    tokenized_dataset = HFDataset.from_list(concatenated_chunks)
+                    del concatenated_chunks
+                else:
+                    def tokenize_function(examples):
+                        return tokenizer(
+                            examples[text_column],
+                            truncation=True,
+                            max_length=args.max_seq_length,
+                            padding=False,
+                            return_special_tokens_mask=True,
+                        )
+                    
+                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    import multiprocessing
+                    cpu_count = multiprocessing.cpu_count()
+                    # CPU 많으면 더 공격적으로 사용 (48 cores → 38 proc, 96 cores → 48 proc)
+                    optimal_num_proc = min(48, max(16, int(cpu_count * 0.8)))
+                    
+                    logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes (from {cpu_count} CPUs)")
+                    
+                    tokenized_dataset = dataset["train"].map(
+                        tokenize_function,
+                        batched=True,
+                        batch_size=50000,
+                        num_proc=optimal_num_proc,
+                        remove_columns=dataset["train"].column_names,
+                        load_from_cache_file=False,
+                        writer_batch_size=100000,
+                        keep_in_memory=False,
+                        desc=f"Tokenizing {src_name}",
+                    )
+                
+                # 캐시 저장
+                logger.info(f"  💾 Saving tokenized dataset...")
+                tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
+                tokenized_marker.touch()
+                logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples")
+            else:
+                # 다른 rank는 마커 대기
+                import time as time_module
+                max_wait = 7200
+                waited = 0
+                logger.info(f"  [Rank {rank}] Waiting for rank 0 to tokenize...")
+                while not tokenized_marker.exists() and waited < max_wait:
+                    time_module.sleep(5)
+                    waited += 5
+                    if waited % 60 == 0:
+                        logger.info(f"  [Rank {rank}] Still waiting... ({waited}s)")
+                
+                if not tokenized_marker.exists():
+                    raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {max_wait}s")
+                
+                logger.info(f"  [Rank {rank}] Loading tokenized dataset...")
+                tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+                logger.info(f"  [Rank {rank}] ✅ Loaded {len(tokenized_dataset):,} samples")
         
         # 정보 저장
         tokenized_datasets_info.append({
