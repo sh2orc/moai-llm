@@ -61,7 +61,7 @@ WARMUP_STEPS=2000
 NUM_EPOCHS=2
 
 # Output directory
-OUTPUT_DIR="outputs/pretrain-korean-instruction-${CONFIG_SIZE}"
+OUTPUT_DIR="outputs/moai-${CONFIG_SIZE}"
 
 # ============================================================================
 # Dataset Configuration
@@ -175,6 +175,7 @@ echo "========================================================================"
 
 # Debug: print command
 echo "DEBUG: Running command:"
+echo "OUTPUT_DIR=$OUTPUT_DIR"
 echo "torchrun --nproc_per_node=$NUM_GPUS --master_port=29500 train.py \\"
 echo "  --mode pretrain \\"
 echo "  --dataset ${DATASETS[*]} \\"
@@ -189,15 +190,15 @@ torchrun \
     train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \
-    --tokenizer_path $TOKENIZER_PATH \
-    --model_config $MODEL_CONFIG \
-    --output_dir $OUTPUT_DIR \
-    --batch_size $BATCH_SIZE \
-    --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
-    --max_seq_length $MAX_SEQ_LENGTH \
-    --learning_rate $LEARNING_RATE \
-    --warmup_steps $WARMUP_STEPS \
-    --num_epochs $NUM_EPOCHS \
+    --tokenizer_path "$TOKENIZER_PATH" \
+    --model_config "$MODEL_CONFIG" \
+    --output_dir "$OUTPUT_DIR" \
+    --batch_size "$BATCH_SIZE" \
+    --gradient_accumulation_steps "$GRADIENT_ACCUMULATION_STEPS" \
+    --max_seq_length "$MAX_SEQ_LENGTH" \
+    --learning_rate "$LEARNING_RATE" \
+    --warmup_steps "$WARMUP_STEPS" \
+    --num_epochs "$NUM_EPOCHS" \
     --bf16 \
     --gradient_checkpointing \
     --packing \
