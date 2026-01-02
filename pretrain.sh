@@ -173,14 +173,14 @@ export OMP_PLACES=cores
 export ARROW_DEFAULT_MEMORY_POOL=mimalloc  # 더 빠른 메모리 할당자
 export ARROW_IO_THREADS=16  # I/O 스레드 수
 
-echo "⚡ Tokenization optimized (극한 최적화!):"
+echo "⚡ Sequential Mode Optimization:"
 echo "  - Fast Tokenizer: ENABLED (Rust-based)"
-echo "  - Strategy: Rank 0 tokenizes, others load"
-echo "  - Processes: 48 (full CPU utilization)"
-echo "  - Batch size: 20000 (2x increased)"
-echo "  - Writer batch: 100000 (2x increased)"
+echo "  - Strategy: Pre-tokenize ALL datasets BEFORE DDP"
+echo "  - Multiprocessing: 32+ processes per dataset"
+echo "  - Batch size: 50000 (optimized for speed)"
+echo "  - Writer batch: 100000 (optimized I/O)"
 echo "  - Cache reuse: ENABLED"
-echo "  - Expected: 30min+ → 5-10min (60-80% faster!)"
+echo "  - Expected: ~100,000+ examples/s per dataset!"
 
 # TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)
 export NVIDIA_TF32_OVERRIDE=1
@@ -231,8 +231,15 @@ echo "Max Seq Length:        $MAX_SEQ_LENGTH"
 echo "Learning Rate:         $LEARNING_RATE"
 echo "Warmup Steps:          $WARMUP_STEPS"
 echo "Epochs:                $NUM_EPOCHS"
+echo "Mode:                  Sequential (one dataset at a time)"
 echo "Packing:               Enabled"
 echo "Logging:               $([ "$USE_WANDB" = "true" ] && echo "W&B ($WANDB_PROJECT)" || echo "Tensorboard")"
+echo "========================================================================"
+echo "📝 Training Flow:"
+echo "  1️⃣  Pre-tokenize all datasets (FAST! ~100k+ ex/s)"
+echo "  2️⃣  Initialize DDP and load model"
+echo "  3️⃣  Train on each dataset sequentially"
+echo "  4️⃣  Save checkpoint after each dataset"
 echo "========================================================================"
 
 # ============================================================================
