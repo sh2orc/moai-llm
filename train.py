@@ -950,12 +950,12 @@ def train_sequential(args):
                         # Fast Tokenizer는 내부적으로 병렬화되므로 num_proc=1이 최적!
                         # TOKENIZERS_PARALLELISM을 true로 강제 설정 (datasets가 false로 바꾸는 것 방지)
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
+                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=None (Fast Tokenizer internal parallelization only)...")
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
                             batched=True,
                             batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                            num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                            num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=True,
                             writer_batch_size=100000,
@@ -1009,12 +1009,12 @@ def train_sequential(args):
                 # 단일 프로세스: 일반 토크나이징
                 # TOKENIZERS_PARALLELISM을 true로 강제 설정
                 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
+                logger.info(f"  ⚡ Tokenizing with num_proc=None (Fast Tokenizer internal parallelization only)...")
                 tokenized_ds = dataset["train"].map(
                     batch_tokenize,
                     batched=True,
                     batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                    num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                    num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                     remove_columns=dataset["train"].column_names,
                     load_from_cache_file=True,
                     writer_batch_size=100000,
@@ -1069,12 +1069,12 @@ def train_sequential(args):
                     else:
                         # TOKENIZERS_PARALLELISM을 true로 강제 설정
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
+                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=None (Fast Tokenizer internal parallelization only)...")
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
                             batched=True,
                             batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                            num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                            num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=True,
                             writer_batch_size=100000,
@@ -1128,12 +1128,12 @@ def train_sequential(args):
                 # 단일 프로세스: 일반 토크나이징
                 # TOKENIZERS_PARALLELISM을 true로 강제 설정
                 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
+                logger.info(f"  ⚡ Tokenizing with num_proc=None (Fast Tokenizer internal parallelization only)...")
                 tokenized_dataset = dataset["train"].map(
                     tokenize_function,
                     batched=True,
                     batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                    num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                    num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                     remove_columns=dataset["train"].column_names,
                     load_from_cache_file=True,
                     writer_batch_size=100000,
@@ -1356,7 +1356,7 @@ def train(args):
                         batch_tokenize,
                         batched=True,
                         batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                        num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                        num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=True,
                         writer_batch_size=100000,
@@ -1415,7 +1415,7 @@ def train(args):
                 batch_tokenize,
                 batched=True,
                 batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,
                 writer_batch_size=100000,
@@ -1476,7 +1476,7 @@ def train(args):
                         tokenize_function,
                         batched=True,
                         batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                        num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                        num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=True,
                         writer_batch_size=100000,
@@ -1535,7 +1535,7 @@ def train(args):
                 tokenize_function,
                 batched=True,
                 batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
-                num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
+                num_proc=None,  # multiprocessing 비활성화, Fast Tokenizer 내부 병렬화만 사용
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,
                 writer_batch_size=100000,
