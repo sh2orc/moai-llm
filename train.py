@@ -49,6 +49,8 @@ python train.py \
 import argparse
 import os
 import hashlib
+import time
+import gc
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -854,8 +856,19 @@ def train_sequential(args):
                 text_column=args.text_column,
             )
         
-        # 3. 토큰화
+        # 3. 토큰화 (DDP 최적화: rank 0만 토크나이징, 나머지는 로드)
         logger.info("🔤 Tokenizing dataset...")
+        
+        # DDP 환경 확인
+        is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+        is_main_process = int(os.environ.get("RANK", 0)) == 0
+        current_rank = int(os.environ.get("RANK", 0))
+        
+        # 토크나이징 캐시 경로
+        cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
+        dataset_hash = hashlib.md5(f"{src_name}_{idx}".encode()).hexdigest()[:16]
+        tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+        tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
         
         if args.packing:
             logger.info(f"📦 Using sequence concatenation (packing mode)")
@@ -869,26 +882,84 @@ def train_sequential(args):
                     add_special_tokens=True,
                 )
             
-            # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
-            world_size = int(os.environ.get("WORLD_SIZE", 1))
-            # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
-            tokenize_num_proc = max(1, args.num_proc // world_size)
-            tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
-            tokenize_writer_batch = 50000  # I/O 최적화
-            
-            logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
-            
-            tokenized_ds = dataset["train"].map(
-                batch_tokenize,
-                batched=True,
-                batch_size=tokenize_batch_size,
-                num_proc=tokenize_num_proc,
-                remove_columns=dataset["train"].column_names,
-                load_from_cache_file=True,  # Use cache to avoid re-tokenizing
-                writer_batch_size=tokenize_writer_batch,  # I/O 최적화
-                keep_in_memory=False,  # 메모리 맵 사용
-                desc="Tokenizing",
-            )
+            # DDP 환경에서 rank 0만 토크나이징 수행
+            if is_distributed:
+                if is_main_process:
+                    # 이미 토크나이징된 결과가 있는지 확인
+                    if tokenized_cache_path.exists() and tokenized_marker.exists():
+                        logger.info(f"  [Rank 0] ✅ Loading cached tokenized dataset from: {tokenized_cache_path}")
+                        from datasets import Dataset as HFDataset
+                        tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
+                    else:
+                        logger.info(f"  [Rank 0] ⚡ Tokenizing with {args.num_proc} processes...")
+                        tokenized_ds = dataset["train"].map(
+                            batch_tokenize,
+                            batched=True,
+                            batch_size=10000,
+                            num_proc=args.num_proc,
+                            remove_columns=dataset["train"].column_names,
+                            load_from_cache_file=True,
+                            writer_batch_size=50000,
+                            keep_in_memory=False,
+                            desc="Tokenizing",
+                        )
+                        
+                        # 토크나이징 결과 저장
+                        logger.info(f"  [Rank 0] 💾 Saving tokenized dataset to: {tokenized_cache_path}")
+                        tokenized_ds.save_to_disk(str(tokenized_cache_path), num_shards=8)
+                        tokenized_marker.touch()
+                        logger.info(f"  [Rank 0] ✅ Tokenizing completed: {len(tokenized_ds):,} samples")
+                    
+                    # barrier 동기화
+                    try:
+                        if torch.distributed.is_initialized():
+                            torch.distributed.barrier()
+                    except (RuntimeError, ValueError, AttributeError):
+                        import time
+                        time.sleep(1)
+                else:
+                    # 다른 rank들은 마커 대기 후 로드
+                    import time
+                    max_wait = 7200  # 최대 2시간
+                    waited = 0
+                    logger.info(f"  [Rank {current_rank}] Waiting for rank 0 to complete tokenizing...")
+                    while not tokenized_marker.exists() and waited < max_wait:
+                        time.sleep(5)
+                        waited += 5
+                        if waited % 60 == 0:
+                            logger.info(f"  [Rank {current_rank}] Still waiting... ({waited}s)")
+                    
+                    if not tokenized_marker.exists():
+                        raise TimeoutError(f"Rank {current_rank}: Tokenizing timeout after {max_wait}s")
+                    
+                    # barrier 동기화
+                    try:
+                        if torch.distributed.is_initialized():
+                            torch.distributed.barrier()
+                    except (RuntimeError, ValueError, AttributeError):
+                        time.sleep(2)
+                    
+                    # 토크나이징 결과 로드
+                    logger.info(f"  [Rank {current_rank}] 📥 Loading tokenized dataset from: {tokenized_cache_path}")
+                    from datasets import Dataset as HFDataset
+                    load_start = time.time()
+                    tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
+                    load_time = time.time() - load_start
+                    logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
+            else:
+                # 단일 프로세스: 일반 토크나이징
+                logger.info(f"  ⚡ Tokenizing with {args.num_proc} processes...")
+                tokenized_ds = dataset["train"].map(
+                    batch_tokenize,
+                    batched=True,
+                    batch_size=10000,
+                    num_proc=args.num_proc,
+                    remove_columns=dataset["train"].column_names,
+                    load_from_cache_file=True,
+                    writer_batch_size=50000,
+                    keep_in_memory=False,
+                    desc="Tokenizing",
+                )
             
             # input_ids 리스트로 변환
             tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
@@ -909,6 +980,7 @@ def train_sequential(args):
             del concatenated_chunks
             gc.collect()
         else:
+            # Non-packing 모드
             def tokenize_function(examples):
                 return tokenizer(
                     examples[text_column],
@@ -917,27 +989,85 @@ def train_sequential(args):
                     padding=False,
                     return_special_tokens_mask=True,
                 )
-
-        # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
-        tokenize_num_proc = max(1, args.num_proc // world_size)
-        tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
-        tokenize_writer_batch = 50000  # I/O 최적화
-        
-        logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
-        
-        tokenized_dataset = dataset["train"].map(
-            tokenize_function,
-            batched=True,
-            batch_size=tokenize_batch_size,
-            num_proc=tokenize_num_proc,
-            remove_columns=dataset["train"].column_names,
-            load_from_cache_file=True,  # Use cache to avoid re-tokenizing
-            writer_batch_size=tokenize_writer_batch,  # I/O 최적화
-            keep_in_memory=False,  # 메모리 맵 사용
-            desc="Tokenizing",
-        )
+            
+            # DDP 환경에서 rank 0만 토크나이징 수행
+            if is_distributed:
+                if is_main_process:
+                    # 이미 토크나이징된 결과가 있는지 확인
+                    if tokenized_cache_path.exists() and tokenized_marker.exists():
+                        logger.info(f"  [Rank 0] ✅ Loading cached tokenized dataset from: {tokenized_cache_path}")
+                        from datasets import Dataset as HFDataset
+                        tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+                    else:
+                        logger.info(f"  [Rank 0] ⚡ Tokenizing with {args.num_proc} processes...")
+                        tokenized_dataset = dataset["train"].map(
+                            tokenize_function,
+                            batched=True,
+                            batch_size=10000,
+                            num_proc=args.num_proc,
+                            remove_columns=dataset["train"].column_names,
+                            load_from_cache_file=True,
+                            writer_batch_size=50000,
+                            keep_in_memory=False,
+                            desc="Tokenizing",
+                        )
+                        
+                        # 토크나이징 결과 저장
+                        logger.info(f"  [Rank 0] 💾 Saving tokenized dataset to: {tokenized_cache_path}")
+                        tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
+                        tokenized_marker.touch()
+                        logger.info(f"  [Rank 0] ✅ Tokenizing completed: {len(tokenized_dataset):,} samples")
+                    
+                    # barrier 동기화
+                    try:
+                        if torch.distributed.is_initialized():
+                            torch.distributed.barrier()
+                    except (RuntimeError, ValueError, AttributeError):
+                        import time
+                        time.sleep(1)
+                else:
+                    # 다른 rank들은 마커 대기 후 로드
+                    import time
+                    max_wait = 7200  # 최대 2시간
+                    waited = 0
+                    logger.info(f"  [Rank {current_rank}] Waiting for rank 0 to complete tokenizing...")
+                    while not tokenized_marker.exists() and waited < max_wait:
+                        time.sleep(5)
+                        waited += 5
+                        if waited % 60 == 0:
+                            logger.info(f"  [Rank {current_rank}] Still waiting... ({waited}s)")
+                    
+                    if not tokenized_marker.exists():
+                        raise TimeoutError(f"Rank {current_rank}: Tokenizing timeout after {max_wait}s")
+                    
+                    # barrier 동기화
+                    try:
+                        if torch.distributed.is_initialized():
+                            torch.distributed.barrier()
+                    except (RuntimeError, ValueError, AttributeError):
+                        time.sleep(2)
+                    
+                    # 토크나이징 결과 로드
+                    logger.info(f"  [Rank {current_rank}] 📥 Loading tokenized dataset from: {tokenized_cache_path}")
+                    from datasets import Dataset as HFDataset
+                    load_start = time.time()
+                    tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+                    load_time = time.time() - load_start
+                    logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
+            else:
+                # 단일 프로세스: 일반 토크나이징
+                logger.info(f"  ⚡ Tokenizing with {args.num_proc} processes...")
+                tokenized_dataset = dataset["train"].map(
+                    tokenize_function,
+                    batched=True,
+                    batch_size=10000,
+                    num_proc=args.num_proc,
+                    remove_columns=dataset["train"].column_names,
+                    load_from_cache_file=True,
+                    writer_batch_size=50000,
+                    keep_in_memory=False,
+                    desc="Tokenizing",
+                )
         
         # 원본 데이터셋 메모리 해제
         del dataset
@@ -1085,8 +1215,20 @@ def train(args):
             train_files=args.train_file,  # 여러 파일 지원
         )
 
-    # 3. 토큰화
+    # 3. 토큰화 (DDP 최적화: rank 0만 토크나이징, 나머지는 로드)
     logger.info("🔤 Tokenizing dataset...")
+    
+    # DDP 환경 확인
+    is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+    is_main_process = int(os.environ.get("RANK", 0)) == 0
+    current_rank = int(os.environ.get("RANK", 0))
+    
+    # 토크나이징 캐시 경로
+    cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
+    dataset_names_str = "_".join(args.dataset) if args.dataset else "local"
+    dataset_hash = hashlib.md5(dataset_names_str.encode()).hexdigest()[:16]
+    tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+    tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
 
     # Packing 모드: 시퀀스 연결 방식 사용 (pretrain/sft 둘 다 지원)
     if args.packing:
@@ -1101,32 +1243,84 @@ def train(args):
                 add_special_tokens=True,
             )
         
-        # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
-        tokenize_num_proc = max(1, args.num_proc // world_size)
-        tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
-        tokenize_writer_batch = 50000  # I/O 최적화
-        
-        logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
-        
-        # Rust 병렬화 활성화 (환경 변수 확인)
-        import os
-        tokenizers_parallel = os.getenv("TOKENIZERS_PARALLELISM", "true")
-        if tokenizers_parallel.lower() != "true":
-            logger.warning("  ⚠️  TOKENIZERS_PARALLELISM is not true - consider setting it for speed")
-        
-        tokenized_ds = dataset["train"].map(
-            batch_tokenize,
-            batched=True,
-            batch_size=tokenize_batch_size,
-            num_proc=tokenize_num_proc,
-            remove_columns=dataset["train"].column_names,
-            load_from_cache_file=True,  # Use cache to avoid re-tokenizing
-            writer_batch_size=tokenize_writer_batch,  # I/O 최적화
-            keep_in_memory=False,  # 메모리 맵 사용
-            desc="Tokenizing",
-        )
+        # DDP 환경에서 rank 0만 토크나이징 수행
+        if is_distributed:
+            if is_main_process:
+                # 이미 토크나이징된 결과가 있는지 확인
+                if tokenized_cache_path.exists() and tokenized_marker.exists():
+                    logger.info(f"  [Rank 0] ✅ Loading cached tokenized dataset from: {tokenized_cache_path}")
+                    from datasets import Dataset as HFDataset
+                    tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
+                else:
+                    logger.info(f"  [Rank 0] ⚡ Tokenizing with {args.num_proc} processes...")
+                    tokenized_ds = dataset["train"].map(
+                        batch_tokenize,
+                        batched=True,
+                        batch_size=10000,
+                        num_proc=args.num_proc,
+                        remove_columns=dataset["train"].column_names,
+                        load_from_cache_file=True,
+                        writer_batch_size=50000,
+                        keep_in_memory=False,
+                        desc="Tokenizing",
+                    )
+                    
+                    # 토크나이징 결과 저장
+                    logger.info(f"  [Rank 0] 💾 Saving tokenized dataset to: {tokenized_cache_path}")
+                    tokenized_ds.save_to_disk(str(tokenized_cache_path), num_shards=8)
+                    tokenized_marker.touch()
+                    logger.info(f"  [Rank 0] ✅ Tokenizing completed: {len(tokenized_ds):,} samples")
+                
+                # barrier 동기화
+                try:
+                    if torch.distributed.is_initialized():
+                        torch.distributed.barrier()
+                except (RuntimeError, ValueError, AttributeError):
+                    import time
+                    time.sleep(1)
+            else:
+                # 다른 rank들은 마커 대기 후 로드
+                import time
+                max_wait = 7200  # 최대 2시간
+                waited = 0
+                logger.info(f"  [Rank {current_rank}] Waiting for rank 0 to complete tokenizing...")
+                while not tokenized_marker.exists() and waited < max_wait:
+                    time.sleep(5)
+                    waited += 5
+                    if waited % 60 == 0:
+                        logger.info(f"  [Rank {current_rank}] Still waiting... ({waited}s)")
+                
+                if not tokenized_marker.exists():
+                    raise TimeoutError(f"Rank {current_rank}: Tokenizing timeout after {max_wait}s")
+                
+                # barrier 동기화
+                try:
+                    if torch.distributed.is_initialized():
+                        torch.distributed.barrier()
+                except (RuntimeError, ValueError, AttributeError):
+                    time.sleep(2)
+                
+                # 토크나이징 결과 로드
+                logger.info(f"  [Rank {current_rank}] 📥 Loading tokenized dataset from: {tokenized_cache_path}")
+                from datasets import Dataset as HFDataset
+                load_start = time.time()
+                tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
+                load_time = time.time() - load_start
+                logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
+        else:
+            # 단일 프로세스: 일반 토크나이징
+            logger.info(f"  ⚡ Tokenizing with {args.num_proc} processes...")
+            tokenized_ds = dataset["train"].map(
+                batch_tokenize,
+                batched=True,
+                batch_size=10000,
+                num_proc=args.num_proc,
+                remove_columns=dataset["train"].column_names,
+                load_from_cache_file=True,
+                writer_batch_size=50000,
+                keep_in_memory=False,
+                desc="Tokenizing",
+            )
         
         # input_ids 리스트로 변환
         tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
@@ -1158,26 +1352,84 @@ def train(args):
                 return_special_tokens_mask=True,
             )
 
-        # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
-        tokenize_num_proc = max(1, args.num_proc // world_size)
-        tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
-        tokenize_writer_batch = 50000  # I/O 최적화
-        
-        logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
-        
-        tokenized_dataset = dataset["train"].map(
-            tokenize_function,
-            batched=True,
-            batch_size=tokenize_batch_size,
-            num_proc=tokenize_num_proc,
-            remove_columns=dataset["train"].column_names,
-            load_from_cache_file=True,  # Use cache to avoid re-tokenizing
-            writer_batch_size=tokenize_writer_batch,  # I/O 최적화
-            keep_in_memory=False,  # 메모리 맵 사용
-            desc="Tokenizing",
-        )
+        # DDP 환경에서 rank 0만 토크나이징 수행
+        if is_distributed:
+            if is_main_process:
+                # 이미 토크나이징된 결과가 있는지 확인
+                if tokenized_cache_path.exists() and tokenized_marker.exists():
+                    logger.info(f"  [Rank 0] ✅ Loading cached tokenized dataset from: {tokenized_cache_path}")
+                    from datasets import Dataset as HFDataset
+                    tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+                else:
+                    logger.info(f"  [Rank 0] ⚡ Tokenizing with {args.num_proc} processes...")
+                    tokenized_dataset = dataset["train"].map(
+                        tokenize_function,
+                        batched=True,
+                        batch_size=10000,
+                        num_proc=args.num_proc,
+                        remove_columns=dataset["train"].column_names,
+                        load_from_cache_file=True,
+                        writer_batch_size=50000,
+                        keep_in_memory=False,
+                        desc="Tokenizing",
+                    )
+                    
+                    # 토크나이징 결과 저장
+                    logger.info(f"  [Rank 0] 💾 Saving tokenized dataset to: {tokenized_cache_path}")
+                    tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
+                    tokenized_marker.touch()
+                    logger.info(f"  [Rank 0] ✅ Tokenizing completed: {len(tokenized_dataset):,} samples")
+                
+                # barrier 동기화
+                try:
+                    if torch.distributed.is_initialized():
+                        torch.distributed.barrier()
+                except (RuntimeError, ValueError, AttributeError):
+                    import time
+                    time.sleep(1)
+            else:
+                # 다른 rank들은 마커 대기 후 로드
+                import time
+                max_wait = 7200  # 최대 2시간
+                waited = 0
+                logger.info(f"  [Rank {current_rank}] Waiting for rank 0 to complete tokenizing...")
+                while not tokenized_marker.exists() and waited < max_wait:
+                    time.sleep(5)
+                    waited += 5
+                    if waited % 60 == 0:
+                        logger.info(f"  [Rank {current_rank}] Still waiting... ({waited}s)")
+                
+                if not tokenized_marker.exists():
+                    raise TimeoutError(f"Rank {current_rank}: Tokenizing timeout after {max_wait}s")
+                
+                # barrier 동기화
+                try:
+                    if torch.distributed.is_initialized():
+                        torch.distributed.barrier()
+                except (RuntimeError, ValueError, AttributeError):
+                    time.sleep(2)
+                
+                # 토크나이징 결과 로드
+                logger.info(f"  [Rank {current_rank}] 📥 Loading tokenized dataset from: {tokenized_cache_path}")
+                from datasets import Dataset as HFDataset
+                load_start = time.time()
+                tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+                load_time = time.time() - load_start
+                logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
+        else:
+            # 단일 프로세스: 일반 토크나이징
+            logger.info(f"  ⚡ Tokenizing with {args.num_proc} processes...")
+            tokenized_dataset = dataset["train"].map(
+                tokenize_function,
+                batched=True,
+                batch_size=10000,
+                num_proc=args.num_proc,
+                remove_columns=dataset["train"].column_names,
+                load_from_cache_file=True,
+                writer_batch_size=50000,
+                keep_in_memory=False,
+                desc="Tokenizing",
+            )
 
     logger.info(f"✓ Tokenized {len(tokenized_dataset)} samples")
 
