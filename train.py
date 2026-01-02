@@ -947,19 +947,25 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        # Fast Tokenizer는 내부적으로 병렬화되므로 num_proc=1이 최적!
-                        # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                        # 하이브리드 접근: Fast Tokenizer + Multiprocessing
+                        # 각 프로세스에서 Fast Tokenizer의 Rust 병렬화 활성화
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-                        logger.info(f"  [Rank 0]    Settings: batch_size=10000, writer_batch_size=50000")
+                        
+                        # 최적 프로세스 수: CPU 코어의 1/4~1/6 정도
+                        import multiprocessing
+                        cpu_count = multiprocessing.cpu_count()
+                        optimal_num_proc = min(8, max(4, cpu_count // 6))
+                        
+                        logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+                        logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
                             batched=True,
-                            batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                            num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                            batch_size=50000,  # 각 프로세스가 큰 배치 처리
+                            num_proc=optimal_num_proc,  # 여러 프로세스 + Fast Tokenizer
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                            writer_batch_size=50000,
+                            writer_batch_size=100000,
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1007,19 +1013,20 @@ def train_sequential(args):
                     load_time = time.time() - load_start
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
             else:
-                # 단일 프로세스: 일반 토크나이징
-                # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                # 하이브리드: Fast Tokenizer + Multiprocessing
                 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-                logger.info(f"     Settings: batch_size=10000, writer_batch_size=50000")
+                import multiprocessing
+                optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+                logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
                 tokenized_ds = dataset["train"].map(
                     batch_tokenize,
                     batched=True,
-                    batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                    num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                    batch_size=50000,
+                    num_proc=optimal_num_proc,
                     remove_columns=dataset["train"].column_names,
-                    load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                    writer_batch_size=50000,
+                    load_from_cache_file=False,
+                    writer_batch_size=100000,
                     keep_in_memory=False,
                     desc="Tokenizing",
                 )
@@ -1069,18 +1076,20 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                        # 하이브리드: Fast Tokenizer + Multiprocessing
                         os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-                        logger.info(f"  [Rank 0]    Settings: batch_size=10000, writer_batch_size=50000")
+                        import multiprocessing
+                        optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                        logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+                        logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
                             batched=True,
-                            batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                            num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                            batch_size=50000,
+                            num_proc=optimal_num_proc,
                             remove_columns=dataset["train"].column_names,
-                            load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                            writer_batch_size=50000,
+                            load_from_cache_file=False,
+                            writer_batch_size=100000,
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1128,19 +1137,20 @@ def train_sequential(args):
                     load_time = time.time() - load_start
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
             else:
-                # 단일 프로세스: 일반 토크나이징
-                # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                # 하이브리드: Fast Tokenizer + Multiprocessing
                 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-                logger.info(f"     Settings: batch_size=10000, writer_batch_size=50000")
+                import multiprocessing
+                optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+                logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
                 tokenized_dataset = dataset["train"].map(
                     tokenize_function,
                     batched=True,
-                    batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                    num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                    batch_size=50000,
+                    num_proc=optimal_num_proc,
                     remove_columns=dataset["train"].column_names,
-                    load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                    writer_batch_size=50000,
+                    load_from_cache_file=False,
+                    writer_batch_size=100000,
                     keep_in_memory=False,
                     desc="Tokenizing",
                 )
@@ -1353,18 +1363,20 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                    # 하이브리드: Fast Tokenizer + Multiprocessing
                     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                    logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-                    logger.info(f"  [Rank 0]    Settings: batch_size=10000, writer_batch_size=50000")
+                    import multiprocessing
+                    optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                    logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+                    logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
                         batched=True,
-                        batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                        num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                        batch_size=50000,
+                        num_proc=optimal_num_proc,
                         remove_columns=dataset["train"].column_names,
-                        load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                        writer_batch_size=50000,
+                        load_from_cache_file=False,
+                        writer_batch_size=100000,
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1412,19 +1424,20 @@ def train(args):
                 load_time = time.time() - load_start
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
         else:
-            # 단일 프로세스: 일반 토크나이징
-            # TOKENIZERS_PARALLELISM을 true로 강제 설정
+            # 하이브리드: Fast Tokenizer + Multiprocessing
             os.environ["TOKENIZERS_PARALLELISM"] = "true"
-            logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-            logger.info(f"     Settings: batch_size=10000, writer_batch_size=50000")
+            import multiprocessing
+            optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+            logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+            logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
-                batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                batch_size=50000,
+                num_proc=optimal_num_proc,
                 remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                writer_batch_size=50000,
+                load_from_cache_file=False,
+                writer_batch_size=100000,
                 keep_in_memory=False,
                 desc="Tokenizing",
             )
@@ -1475,18 +1488,20 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    # TOKENIZERS_PARALLELISM을 true로 강제 설정
+                    # 하이브리드: Fast Tokenizer + Multiprocessing
                     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-                    logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-                    logger.info(f"  [Rank 0]    Settings: batch_size=10000, writer_batch_size=50000")
+                    import multiprocessing
+                    optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+                    logger.info(f"  [Rank 0] ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+                    logger.info(f"  [Rank 0]    Settings: batch_size=50000, writer_batch_size=100000")
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
-                        batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                        num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                        batch_size=50000,
+                        num_proc=optimal_num_proc,
                         remove_columns=dataset["train"].column_names,
-                        load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                        writer_batch_size=50000,
+                        load_from_cache_file=False,
+                        writer_batch_size=100000,
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1534,19 +1549,20 @@ def train(args):
                 load_time = time.time() - load_start
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
         else:
-            # 단일 프로세스: 일반 토크나이징
-            # TOKENIZERS_PARALLELISM을 true로 강제 설정
+            # 하이브리드: Fast Tokenizer + Multiprocessing
             os.environ["TOKENIZERS_PARALLELISM"] = "true"
-            logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization only)...")
-            logger.info(f"     Settings: batch_size=10000, writer_batch_size=50000")
+            import multiprocessing
+            optimal_num_proc = min(8, max(4, multiprocessing.cpu_count() // 6))
+            logger.info(f"  ⚡ Hybrid tokenization: {optimal_num_proc} processes × Fast Tokenizer")
+            logger.info(f"     Settings: batch_size=50000, writer_batch_size=100000")
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
-                batch_size=10000,  # 첫 배치가 빨리 시작되도록 줄임
-                num_proc=1,  # 명시적으로 1로 설정! (None이 아님)
+                batch_size=50000,
+                num_proc=optimal_num_proc,
                 remove_columns=dataset["train"].column_names,
-                load_from_cache_file=False,  # 캐시 비활성화 (충돌 방지)
-                writer_batch_size=50000,
+                load_from_cache_file=False,
+                writer_batch_size=100000,
                 keep_in_memory=False,
                 desc="Tokenizing",
             )
