@@ -424,9 +424,8 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
     # 환경 변수로 조정 가능한 최적화 파라미터
-    # DATASET_NUM_PROC=0 또는 1 → None (fork 없이 단일 스레드로 실행, Fast Tokenizer 병렬화 유지)
-    _num_proc_env = int(os.getenv("DATASET_NUM_PROC", min(8, os.cpu_count() or 2)))
-    dataset_num_proc = None if _num_proc_env <= 1 else _num_proc_env
+    # 높은 num_proc = 각 프로세스가 독립적으로 토크나이저 실행 → 빠름!
+    dataset_num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, os.cpu_count() or 8)))
     dataset_batch_size = int(os.getenv("DATASET_BATCH_SIZE", 1000))
     dataset_writer_batch_size = int(os.getenv("DATASET_WRITER_BATCH_SIZE", 10000))
     
@@ -440,8 +439,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         
         if is_main_process:
             # rank 0만 데이터셋 변환 (멀티프로세스로 빠르게)
-            _proc_str = "single thread (no fork)" if dataset_num_proc is None else f"{dataset_num_proc} processes"
-            logger.info(f"    [Rank 0] Converting dataset with {_proc_str} "
+            logger.info(f"    [Rank 0] Converting dataset with {dataset_num_proc} processes "
                        f"(batch_size={dataset_batch_size}, writer_batch_size={dataset_writer_batch_size})...")
             converted = train_data.map(
                 convert_batch,
@@ -461,9 +459,8 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             logger.info(f"    [Rank 0] Created conversion marker: {cache_marker}")
             
             # 빈 텍스트 필터링 (병렬 처리로 빠르게)
-            filter_num_proc = None if dataset_num_proc is None else min(dataset_num_proc // 2, 4)
-            _filter_str = "single thread" if filter_num_proc is None else f"{filter_num_proc} processes"
-            logger.info(f"    [Rank 0] Filtering empty texts with {_filter_str}...")
+            filter_num_proc = min(dataset_num_proc // 2, 4)
+            logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
             converted = converted.filter(
                 lambda x: len(x["text"]) > 0, 
                 num_proc=filter_num_proc,  # 병렬 처리로 빠르게
@@ -556,8 +553,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             
     else:
         # 단일 프로세스 환경
-        _proc_str = "single thread (no fork)" if dataset_num_proc is None else f"{dataset_num_proc} processes"
-        logger.info(f"    Converting dataset with {_proc_str}...")
+        logger.info(f"    Converting dataset with {dataset_num_proc} processes...")
         converted = train_data.map(
             convert_batch,
             batched=True,
@@ -571,7 +567,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         )
         
         logger.info(f"    Filtering empty texts...")
-        filter_num_proc = None if dataset_num_proc is None else min(dataset_num_proc // 2, 4)
+        filter_num_proc = min(dataset_num_proc // 2, 4)
         converted = converted.filter(
             lambda x: len(x["text"]) > 0, 
             num_proc=filter_num_proc,
@@ -1018,41 +1014,75 @@ def train_sequential(args):
                 logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
             else:
                 # 캐시가 없으면 토큰화
-                logger.info(f"  🔤 Tokenizing with multiprocessing...")
+                logger.info(f"  🔤 Tokenizing with CHUNK-based parallel processing...")
                 
                 if args.packing:
-                    def batch_tokenize(examples):
-                        return tokenizer(
-                            examples[text_column],
+                    import multiprocessing
+                    from concurrent.futures import ProcessPoolExecutor, as_completed
+                    import time
+                    
+                    cpu_count = multiprocessing.cpu_count()
+                    num_workers = min(48, cpu_count)
+                    
+                    # 데이터를 청크로 분할
+                    train_data = dataset["train"]
+                    total_samples = len(train_data)
+                    chunk_size = 100000  # 10만 개씩 처리
+                    num_chunks = (total_samples + chunk_size - 1) // chunk_size
+                    
+                    logger.info(f"  ⚡ CHUNK-based Parallel Tokenization")
+                    logger.info(f"     Total samples: {total_samples:,}")
+                    logger.info(f"     Chunk size: {chunk_size:,}")
+                    logger.info(f"     Number of chunks: {num_chunks}")
+                    logger.info(f"     Workers: {num_workers}")
+                    
+                    # 토크나이저 경로 저장 (프로세스 간 전달)
+                    tokenizer_path = args.tokenizer_path
+                    
+                    all_input_ids = []
+                    start_time = time.time()
+                    
+                    # 청크별로 순차 처리 (메모리 효율적)
+                    for chunk_idx in range(num_chunks):
+                        chunk_start = chunk_idx * chunk_size
+                        chunk_end = min((chunk_idx + 1) * chunk_size, total_samples)
+                        
+                        # 청크 데이터 추출
+                        chunk_texts = train_data[chunk_start:chunk_end][text_column]
+                        
+                        # 배치 토크나이징 (Fast Tokenizer는 배치에서 병렬 처리)
+                        tokenized = tokenizer(
+                            chunk_texts,
                             truncation=False,
                             padding=False,
                             add_special_tokens=True,
                         )
+                        
+                        all_input_ids.extend(tokenized["input_ids"])
+                        
+                        # 진행률 출력
+                        elapsed = time.time() - start_time
+                        samples_done = chunk_end
+                        samples_per_sec = samples_done / elapsed if elapsed > 0 else 0
+                        eta = (total_samples - samples_done) / samples_per_sec if samples_per_sec > 0 else 0
+                        
+                        logger.info(f"  📦 Chunk {chunk_idx+1}/{num_chunks}: "
+                                   f"{samples_done:,}/{total_samples:,} "
+                                   f"({100*samples_done/total_samples:.1f}%) "
+                                   f"[{samples_per_sec:.0f} samples/s, ETA: {eta/60:.1f}min]")
+                        
+                        # 메모리 해제
+                        del chunk_texts, tokenized
+                        gc.collect()
                     
-                    # ⚡ 최적화: num_proc=1 + Fast Tokenizer 내부 병렬화 (가장 빠름!)
-                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # Fast Tokenizer 병렬화 활성화
-                    import multiprocessing
-                    cpu_count = multiprocessing.cpu_count()
+                    total_time = time.time() - start_time
+                    logger.info(f"  ✅ Tokenization completed in {total_time/60:.1f} minutes")
+                    logger.info(f"     Average speed: {total_samples/total_time:.0f} samples/s")
                     
-                    logger.info(f"  ⚡ Fast Tokenizer: Single process with internal threading ({cpu_count} CPUs)")
-                    logger.info(f"     Strategy: num_proc=1 + TOKENIZERS_PARALLELISM=true (빠름!)")
-                    logger.info(f"     batch_size=50000")
-                    
-                    tokenized_ds = dataset["train"].map(
-                        batch_tokenize,
-                        batched=True,
-                        batch_size=50000,
-                        num_proc=None,  # ⚡ None = 단일 스레드, fork 없음!
-                        remove_columns=dataset["train"].column_names,
-                        load_from_cache_file=False,
-                        writer_batch_size=100000,
-                        keep_in_memory=False,
-                        desc=f"Tokenizing {src_name}",
-                    )
-                    
+                    # Packing
                     logger.info(f"  📦 Packing sequences...")
-                    tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
-                    del tokenized_ds
+                    tokenized_list = [{"input_ids": ids} for ids in all_input_ids]
+                    del all_input_ids
                     
                     concatenated_chunks = concatenate_sequences(
                         tokenized_sequences=tokenized_list,
@@ -1078,19 +1108,22 @@ def train_sequential(args):
                     import multiprocessing
                     cpu_count = multiprocessing.cpu_count()
                     
-                    logger.info(f"  ⚡ Fast Tokenizer: Single process with internal threading ({cpu_count} CPUs)")
-                    logger.info(f"     Strategy: num_proc=1 + TOKENIZERS_PARALLELISM=true (빠름!)")
+                    # 최적 프로세스 수 계산
+                    optimal_num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, multiprocessing.cpu_count())))
+                    
+                    logger.info(f"  ⚡ Parallel Tokenization: {optimal_num_proc} processes ({cpu_count} CPUs)")
+                    logger.info(f"     Strategy: Each process runs tokenizer independently → FAST!")
                     
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
-                        batch_size=50000,
-                        num_proc=None,  # ⚡ None = 단일 스레드, fork 없음!
+                        batch_size=5000,
+                        num_proc=optimal_num_proc,  # ⚡ 48개 프로세스 동시 실행!
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
                         writer_batch_size=100000,
                         keep_in_memory=False,
-                        desc=f"Tokenizing {src_name}",
+                        desc=f"Tokenizing {src_name} (num_proc={optimal_num_proc})",
                     )
                 
                 # 캐시 저장

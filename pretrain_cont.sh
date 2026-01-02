@@ -277,13 +277,12 @@ echo "========================================================================"
 echo "🔥 STEP 1: Pre-tokenizing all datasets (before DDP)"
 echo "========================================================================"
 echo "⚡ Tokenization settings:"
-echo "  - DATASET_NUM_PROC=1 (single process for Fast Tokenizer)"
-echo "  - TOKENIZERS_PARALLELISM=true (Rust parallelism enabled)"
+echo "  - DATASET_NUM_PROC=48 (48 processes for parallel tokenization)"
+echo "  - Each process runs tokenizer independently → FAST!"
 echo ""
 
-# 핵심: tokenize_only 단계에서는 단일 프로세스 사용!
-DATASET_NUM_PROC=1 \
-TOKENIZERS_PARALLELISM=true \
+# 48개 프로세스가 각각 독립적으로 토크나이저 실행 → 빠름!
+DATASET_NUM_PROC=48 \
 python3 train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \
