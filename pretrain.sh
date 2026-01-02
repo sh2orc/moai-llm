@@ -198,6 +198,8 @@ export TRANSFORMERS_NO_ADVISORY_WARNINGS=1  # 경고 메시지 최소화
 
 # Python 최적화 (import 속도 향상)
 export PYTHONDONTWRITEBYTECODE=1  # .pyc 파일 생성 안함 (SSD에서는 더 빠름)
+export PYTHONUNBUFFERED=1  # 버퍼 없이 즉시 출력
+export PYTHONHASHSEED=0  # hash seed 고정 (약간의 속도 향상)
 
 # CUDA 초기화 최적화 (8개 프로세스 동시 시작 시 경합 방지)
 export CUDA_MODULE_LOADING=LAZY  # CUDA 모듈 지연 로딩
