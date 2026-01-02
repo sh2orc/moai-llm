@@ -293,8 +293,10 @@ def tokenize_dataset(
     if num_proc is None:
         num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, cpu_count)))
 
-    batch_size = 50000
-    writer_batch_size = 100000
+    # batch_size: 진행률 업데이트 빈도와 IPC 오버헤드의 균형
+    # 10000 = 더 자주 진행률 표시, 약간의 오버헤드 증가
+    batch_size = int(os.getenv("DATASET_BATCH_SIZE", 10000))
+    writer_batch_size = int(os.getenv("DATASET_WRITER_BATCH_SIZE", 50000))
 
     # 핵심: 멀티프로세싱 사용 시 반드시 false (CPU 쓰레싱 방지)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
