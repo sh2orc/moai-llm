@@ -312,19 +312,21 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         return {"text": texts}
     
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
-    # 배치 크기를 줄여서 프로세스당 메모리 사용량 감소
+    # num_proc를 줄여서 프로세스 간 통신 버퍼 사용량 감소
     converted = train_data.map(
         convert_batch,
         batched=True,
         batch_size=500,  # 1000 -> 500으로 감소 (프로세스당 메모리 사용량 감소)
-        num_proc=min(8, os.cpu_count() or 4),  # 병렬 처리 유지
+        num_proc=min(4, os.cpu_count() or 2),  # 8 -> 4로 감소 (버퍼 공간 부족 방지)
         remove_columns=train_data.column_names,
         load_from_cache_file=True,  # Use cache to avoid re-tokenizing
         desc=f"Converting {dataset_name}",
     )
     
-    # 빈 텍스트 필터링 (병렬 처리 유지)
-    converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=min(4, os.cpu_count() or 2))
+    # 빈 텍스트 필터링 (단일 프로세스로 변경 - 버퍼 공간 부족 방지)
+    # 병렬 필터링은 프로세스 간 통신 버퍼를 많이 사용하므로 단일 프로세스 사용
+    # TOKENIZERS_PARALLELISM=true가 설정되어 있어 Rust 레벨에서 병렬화됨
+    converted = converted.filter(lambda x: len(x["text"]) > 0, num_proc=1)
     
     # Dataset 객체를 그대로 반환 (메모리 효율적)
     # 리스트 변환을 피하고 Dataset을 직접 사용하여 메모리 사용량 최소화
@@ -716,11 +718,14 @@ def train_sequential(args):
                 )
             
             logger.info("  Batch tokenizing...")
+            # 버퍼 공간 부족 방지를 위해 num_proc 제한
+            # TOKENIZERS_PARALLELISM=true가 설정되어 있어 Rust 레벨에서 병렬화됨
+            safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
                 batch_size=1000,
-                num_proc=args.num_proc,
+                num_proc=safe_num_proc,
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,  # Use cache to avoid re-tokenizing
                 desc="Tokenizing",
@@ -754,11 +759,13 @@ def train_sequential(args):
                     return_special_tokens_mask=True,
                 )
 
+            # 버퍼 공간 부족 방지를 위해 num_proc 제한
+            safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
                 batch_size=1000,
-                num_proc=args.num_proc,
+                num_proc=safe_num_proc,
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,  # Use cache to avoid re-tokenizing
                 desc="Tokenizing",
@@ -927,11 +934,13 @@ def train(args):
             )
         
         logger.info("  Batch tokenizing...")
+        # 버퍼 공간 부족 방지를 위해 num_proc 제한
+        safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
         tokenized_ds = dataset["train"].map(
             batch_tokenize,
             batched=True,
             batch_size=1000,
-            num_proc=args.num_proc,
+            num_proc=safe_num_proc,
             remove_columns=dataset["train"].column_names,
             load_from_cache_file=True,  # Use cache to avoid re-tokenizing
             desc="Tokenizing",
@@ -967,11 +976,13 @@ def train(args):
                 return_special_tokens_mask=True,
             )
 
+        # 버퍼 공간 부족 방지를 위해 num_proc 제한
+        safe_num_proc = min(args.num_proc, 4)  # 최대 4개 프로세스로 제한
         tokenized_dataset = dataset["train"].map(
             tokenize_function,
             batched=True,
             batch_size=1000,
-            num_proc=args.num_proc,
+            num_proc=safe_num_proc,
             remove_columns=dataset["train"].column_names,
             load_from_cache_file=True,  # Use cache to avoid re-tokenizing
             desc="Tokenizing",
