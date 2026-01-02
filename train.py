@@ -947,14 +947,13 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        # Fast Tokenizer는 내부적으로 병렬화되므로 num_proc는 8-16이 최적
-                        optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-                        logger.info(f"  [Rank 0] ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+                        # Fast Tokenizer는 내부적으로 병렬화되므로 num_proc=1이 최적!
+                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
                             batched=True,
-                            batch_size=50000,  # 대폭 증가 (Fast Tokenizer + 낮은 num_proc)
-                            num_proc=optimal_num_proc,  # 8-16 (Fast Tokenizer 내부 병렬화 활용)
+                            batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                            num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=True,
                             writer_batch_size=100000,
@@ -1006,13 +1005,12 @@ def train_sequential(args):
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
             else:
                 # 단일 프로세스: 일반 토크나이징
-                optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-                logger.info(f"  ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+                logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                 tokenized_ds = dataset["train"].map(
                     batch_tokenize,
                     batched=True,
-                    batch_size=50000,  # 대폭 증가 (Fast Tokenizer + 낮은 num_proc)
-                    num_proc=optimal_num_proc,  # 8-16 (Fast Tokenizer 내부 병렬화 활용)
+                    batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                    num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                     remove_columns=dataset["train"].column_names,
                     load_from_cache_file=True,
                     writer_batch_size=100000,
@@ -1065,13 +1063,12 @@ def train_sequential(args):
                         from datasets import Dataset as HFDataset
                         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                     else:
-                        optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-                        logger.info(f"  [Rank 0] ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+                        logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
                             batched=True,
-                            batch_size=50000,  # 대폭 증가
-                            num_proc=optimal_num_proc,  # 8-16 최적값
+                            batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                            num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=True,
                             writer_batch_size=100000,
@@ -1123,13 +1120,12 @@ def train_sequential(args):
                     logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
             else:
                 # 단일 프로세스: 일반 토크나이징
-                optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-                logger.info(f"  ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+                logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                 tokenized_dataset = dataset["train"].map(
                     tokenize_function,
                     batched=True,
-                    batch_size=50000,  # 대폭 증가
-                    num_proc=optimal_num_proc,  # 8-16 최적값
+                    batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                    num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                     remove_columns=dataset["train"].column_names,
                     load_from_cache_file=True,
                     writer_batch_size=100000,
@@ -1345,13 +1341,12 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_ds = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-                    logger.info(f"  [Rank 0] ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+                    logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
                         batched=True,
-                        batch_size=50000,  # 대폭 증가
-                        num_proc=optimal_num_proc,  # 8-16 최적값
+                        batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                        num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=True,
                         writer_batch_size=100000,
@@ -1403,13 +1398,12 @@ def train(args):
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_ds):,} samples in {load_time:.1f}s")
         else:
             # 단일 프로세스: 일반 토크나이징
-            optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-            logger.info(f"  ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+            logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
-                batch_size=50000,  # 대폭 증가
-                num_proc=optimal_num_proc,  # 8-16 최적값
+                batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,
                 writer_batch_size=100000,
@@ -1463,13 +1457,12 @@ def train(args):
                     from datasets import Dataset as HFDataset
                     tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
                 else:
-                    optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-                    logger.info(f"  [Rank 0] ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+                    logger.info(f"  [Rank 0] ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
-                        batch_size=50000,  # 대폭 증가
-                        num_proc=optimal_num_proc,  # 8-16 최적값
+                        batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                        num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=True,
                         writer_batch_size=100000,
@@ -1521,13 +1514,12 @@ def train(args):
                 logger.info(f"  [Rank {current_rank}] ✅ Loaded {len(tokenized_dataset):,} samples in {load_time:.1f}s")
         else:
             # 단일 프로세스: 일반 토크나이징
-            optimal_num_proc = min(16, max(8, os.cpu_count() // 4 if os.cpu_count() else 8))
-            logger.info(f"  ⚡ Tokenizing with {optimal_num_proc} processes (Fast Tokenizer optimized)...")
+            logger.info(f"  ⚡ Tokenizing with num_proc=1 (Fast Tokenizer internal parallelization)...")
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
-                batch_size=50000,  # 대폭 증가
-                num_proc=optimal_num_proc,  # 8-16 최적값
+                batch_size=100000,  # Fast Tokenizer는 큰 배치 처리 가능
+                num_proc=1,  # Fast Tokenizer 내부 병렬화만 사용
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,
                 writer_batch_size=100000,
