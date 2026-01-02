@@ -1863,11 +1863,10 @@ def main():
         
         # 핵심: 단일 프로세스로 Fast Tokenizer 사용
         # num_proc=1 → datasets가 TOKENIZERS_PARALLELISM=false 설정 안함
-        # TOKENIZERS_PARALLELISM=true → Fast Tokenizer 내부 병렬화 활성화
-        os.environ["TOKENIZERS_PARALLELISM"] = "true"
-        os.environ["RAYON_NUM_THREADS"] = str(os.cpu_count() or 96)
-        os.environ["DATASET_NUM_PROC"] = "1"  # 핵심! 단일 프로세스로 변환
-        print(f"⚡ DATASET_NUM_PROC=1 + TOKENIZERS_PARALLELISM=true + RAYON_NUM_THREADS={os.cpu_count()}")
+        # 데이터 변환은 병렬로, 토크나이징은 batch iterator로
+        num_proc = os.getenv("DATASET_NUM_PROC", str(min(48, os.cpu_count() or 8)))
+        os.environ["DATASET_NUM_PROC"] = num_proc
+        print(f"⚡ DATASET_NUM_PROC={num_proc} for data conversion")
         
         # train_sequential 호출 (토큰화 부분만 실행됨)
         print("🚀 Calling train_sequential for tokenization...")
