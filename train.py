@@ -842,9 +842,9 @@ def train_sequential(args):
                     add_special_tokens=True,
                 )
             
-            # 토크나이징 최적화 - 제한 제거 및 배치 크기 증가
+            # 토크나이징 최적화 - 균형잡힌 설정
             tokenize_num_proc = args.num_proc  # 제한 제거!
-            tokenize_batch_size = 20000  # 배치 크기 대폭 증가
+            tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
             tokenize_writer_batch = 50000  # I/O 최적화
             
             logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
@@ -889,9 +889,9 @@ def train_sequential(args):
                     return_special_tokens_mask=True,
                 )
 
-        # 토크나이징 최적화 - 제한 제거 및 배치 크기 증가
+        # 토크나이징 최적화 - 균형잡힌 설정
         tokenize_num_proc = args.num_proc  # 제한 제거!
-        tokenize_batch_size = 20000  # 배치 크기 대폭 증가
+        tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
         tokenize_writer_batch = 50000  # I/O 최적화
         
         logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
@@ -1070,10 +1070,10 @@ def train(args):
                 add_special_tokens=True,
             )
         
-        # 토크나이징 최적화 - 제한 제거 및 배치 크기 증가
+        # 토크나이징 최적화 - 균형잡힌 설정
         tokenize_num_proc = args.num_proc  # 제한 제거! 사용자 설정 그대로 사용
-        tokenize_batch_size = 20000  # 배치 크기 대폭 증가 (5000 → 20000)
-        tokenize_writer_batch = 50000  # I/O 최적화 (20000 → 50000)
+        tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
+        tokenize_writer_batch = 50000  # I/O 최적화
         
         logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
         
