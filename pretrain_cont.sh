@@ -101,8 +101,8 @@ if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
     done
     export CUDA_VISIBLE_DEVICES="$GPU_LIST"
 fi
-# Use tokenizers' internal Rust parallelism (shared memory, no process duplication)
-export TOKENIZERS_PARALLELISM=true
+# TOKENIZERS_PARALLELISM은 train.py에서 자동 설정됨 (num_proc>1 시 false)
+# export TOKENIZERS_PARALLELISM=false
 
 # NCCL settings
 # P2P 비활성화: RTX 계열 + A40 (A40은 P2P 이슈 있음)
@@ -154,8 +154,10 @@ echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
 # ============================================================================
 # Tokenization Optimization (토크나이징 최적화) ⚡⚡⚡
 # ============================================================================
-# Rust 토크나이저 병렬화 활성화 (중요!)
-export TOKENIZERS_PARALLELISM=true
+# train.py의 tokenize_dataset()이 자동으로 최적 설정 적용:
+# - TOKENIZERS_PARALLELISM=false (멀티프로세싱 사용 시 필수)
+# - num_proc=48 (각 프로세스가 독립적으로 토크나이저 실행)
+# - batch_size=50000 (IPC 오버헤드 최소화)
 
 # Python 멀티프로세싱 최적화
 export PYTHONUNBUFFERED=1
