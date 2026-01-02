@@ -1024,21 +1024,20 @@ def train_sequential(args):
                             add_special_tokens=True,
                         )
                     
-                    # ⚡ 최적화: 프로세스 수를 줄이고, 각 프로세스에서 Fast Tokenizer 병렬화 활용
-                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # 각 프로세스에서 병렬화
+                    # ⚡ 최적화: num_proc=1 + Fast Tokenizer 내부 병렬화 (가장 빠름!)
+                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # Fast Tokenizer 병렬화 활성화
                     import multiprocessing
                     cpu_count = multiprocessing.cpu_count()
-                    # 적당한 프로세스 수 (너무 많으면 오버헤드)
-                    optimal_num_proc = min(16, max(8, cpu_count // 8))  # 96 cores → 12 proc
                     
-                    logger.info(f"  ⚡ Optimized: {optimal_num_proc} processes × Fast Tokenizer threading (from {cpu_count} CPUs)")
-                    logger.info(f"     batch_size=50000, each process uses multi-threading")
+                    logger.info(f"  ⚡ Fast Tokenizer: Single process with internal threading ({cpu_count} CPUs)")
+                    logger.info(f"     Strategy: num_proc=1 + TOKENIZERS_PARALLELISM=true (빠름!)")
+                    logger.info(f"     batch_size=50000")
                     
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
                         batched=True,
                         batch_size=50000,
-                        num_proc=optimal_num_proc,
+                        num_proc=1,  # ⚡ 단일 프로세스 + Fast Tokenizer 병렬화
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
                         writer_batch_size=100000,
@@ -1069,20 +1068,19 @@ def train_sequential(args):
                             return_special_tokens_mask=True,
                         )
                     
-                    # ⚡ 최적화: 프로세스 수를 줄이고, 각 프로세스에서 Fast Tokenizer 병렬화 활용
-                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # 각 프로세스에서 병렬화
+                    # ⚡ 최적화: num_proc=1 + Fast Tokenizer 내부 병렬화 (가장 빠름!)
+                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # Fast Tokenizer 병렬화 활성화
                     import multiprocessing
                     cpu_count = multiprocessing.cpu_count()
-                    # 적당한 프로세스 수 (너무 많으면 오버헤드)
-                    optimal_num_proc = min(16, max(8, cpu_count // 8))  # 96 cores → 12 proc
                     
-                    logger.info(f"  ⚡ Optimized: {optimal_num_proc} processes × Fast Tokenizer threading (from {cpu_count} CPUs)")
+                    logger.info(f"  ⚡ Fast Tokenizer: Single process with internal threading ({cpu_count} CPUs)")
+                    logger.info(f"     Strategy: num_proc=1 + TOKENIZERS_PARALLELISM=true (빠름!)")
                     
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
                         batch_size=50000,
-                        num_proc=optimal_num_proc,
+                        num_proc=1,  # ⚡ 단일 프로세스 + Fast Tokenizer 병렬화
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=False,
                         writer_batch_size=100000,
