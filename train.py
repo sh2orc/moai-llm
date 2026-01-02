@@ -314,26 +314,35 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
     # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 대기하여 캐시 파일 충돌 방지
     if is_distributed:
+        # 모든 프로세스가 변환 시작 전에 동기화
+        try:
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+        except (RuntimeError, ValueError, AttributeError):
+            pass
+        
         if is_main_process:
             # rank 0만 데이터셋 변환 (캐시 파일 쓰기)
+            # 단일 프로세스로 변환하여 캐시 파일 충돌 방지
             logger.info(f"    [Rank 0] Converting dataset...")
             converted = train_data.map(
                 convert_batch,
                 batched=True,
                 batch_size=500,
-                num_proc=min(4, os.cpu_count() or 2),
+                num_proc=1,  # 단일 프로세스로 변환 (캐시 파일 충돌 방지)
                 remove_columns=train_data.column_names,
                 load_from_cache_file=True,
                 desc=f"Converting {dataset_name}",
             )
             logger.info(f"    [Rank 0] Dataset conversion completed")
-            # 변환 완료 후 barrier
+            
+            # 변환 완료 후 barrier (다른 프로세스가 진행하도록)
             try:
                 if torch.distributed.is_initialized():
                     torch.distributed.barrier()
             except (RuntimeError, ValueError, AttributeError):
                 import time
-                time.sleep(2)
+                time.sleep(1)
         else:
             # 다른 프로세스는 rank 0이 변환 완료할 때까지 대기
             logger.info(f"    [Rank {current_rank}] Waiting for dataset conversion...")
@@ -342,10 +351,15 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                     torch.distributed.barrier()
             except (RuntimeError, ValueError, AttributeError):
                 import time
-                time.sleep(5)  # rank 0이 완료할 시간 확보
+                # rank 0이 변환을 완료할 충분한 시간 대기
+                time.sleep(10)
             
-            # barrier 통과 후 캐시된 데이터셋 로드 (변환 없이)
+            # barrier 통과 후 캐시된 데이터셋 로드 (변환 없이, 읽기 전용)
             logger.info(f"    [Rank {current_rank}] Loading cached converted dataset...")
+            # 캐시가 완성되었는지 확인하기 위해 짧은 대기
+            import time
+            time.sleep(2)
+            
             converted = train_data.map(
                 convert_batch,
                 batched=True,
