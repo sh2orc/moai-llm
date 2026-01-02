@@ -157,7 +157,7 @@ export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 
 echo "⚡ Tokenization optimized:"
-echo "  - Processes: 16 (unlimited)"
+echo "  - Processes: 32 / world_size (DDP optimized, e.g. 4 per GPU)"
 echo "  - Batch size: 10000 (balanced for stability)"
 echo "  - Writer batch: 50000"
 echo "  - Rust parallelism: ENABLED"
@@ -243,7 +243,7 @@ torchrun \
     --packing \
     --sequential \
     --flash_attention \
-    --num_proc 16 \
+    --num_proc 32 \
     --dataloader_num_workers 8 \
     --logging_steps 10 \
     --save_steps 500 \

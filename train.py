@@ -252,6 +252,32 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     # DDP 환경에서는 rank 0만 데이터셋을 다운로드 및 변환
     # 다른 rank들은 최종 변환 결과만 로드
     if is_distributed:
+        # 먼저 최종 데이터셋이 이미 존재하는지 확인
+        cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
+        cache_hash = hashlib.md5(f"{dataset_name}_{dataset_config}".encode()).hexdigest()[:16]
+        dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
+        filter_marker_path = Path(cache_home) / "datasets" / f".{cache_hash}_filtered.marker"
+        
+        # 이미 처리된 데이터셋이 있으면 모든 rank가 로드 (재시작 시 안전)
+        if dataset_save_path.exists() and filter_marker_path.exists():
+            logger.info(f"    [Rank {current_rank}] ✅ Using existing processed dataset from: {dataset_save_path}")
+            from datasets import Dataset
+            import time
+            load_start = time.time()
+            converted = Dataset.load_from_disk(str(dataset_save_path))
+            load_time = time.time() - load_start
+            logger.info(f"    [Rank {current_rank}] Loaded {len(converted):,} samples in {load_time:.1f}s")
+            
+            # barrier 동기화
+            try:
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+            except (RuntimeError, ValueError, AttributeError):
+                pass
+            
+            # 변환 결과 반환 (나머지 로직 건너뛰기)
+            return converted
+        
         # barrier는 distributed가 완전히 초기화된 후에만 사용
         try:
             if torch.distributed.is_initialized():
@@ -842,12 +868,14 @@ def train_sequential(args):
                     add_special_tokens=True,
                 )
             
-            # 토크나이징 최적화 - 균형잡힌 설정
-            tokenize_num_proc = args.num_proc  # 제한 제거!
+            # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
+            world_size = int(os.environ.get("WORLD_SIZE", 1))
+            # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
+            tokenize_num_proc = max(1, args.num_proc // world_size)
             tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
             tokenize_writer_batch = 50000  # I/O 최적화
             
-            logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+            logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
             
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
@@ -889,12 +917,14 @@ def train_sequential(args):
                     return_special_tokens_mask=True,
                 )
 
-        # 토크나이징 최적화 - 균형잡힌 설정
-        tokenize_num_proc = args.num_proc  # 제한 제거!
+        # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
+        tokenize_num_proc = max(1, args.num_proc // world_size)
         tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
         tokenize_writer_batch = 50000  # I/O 최적화
         
-        logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
         
         tokenized_dataset = dataset["train"].map(
             tokenize_function,
@@ -1070,12 +1100,14 @@ def train(args):
                 add_special_tokens=True,
             )
         
-        # 토크나이징 최적화 - 균형잡힌 설정
-        tokenize_num_proc = args.num_proc  # 제한 제거! 사용자 설정 그대로 사용
+        # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
+        tokenize_num_proc = max(1, args.num_proc // world_size)
         tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
         tokenize_writer_batch = 50000  # I/O 최적화
         
-        logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        logger.info(f"  ⚡ Batch tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
         
         # Rust 병렬화 활성화 (환경 변수 확인)
         import os
@@ -1125,12 +1157,14 @@ def train(args):
                 return_special_tokens_mask=True,
             )
 
-        # 토크나이징 최적화: num_proc 증가 및 배치 크기 최적화
-        tokenize_num_proc = min(args.num_proc, 16)  # 최대 16개 프로세스
-        tokenize_batch_size = 5000  # 배치 크기 증가 (1000 → 5000)
-        tokenize_writer_batch = 20000  # I/O 최적화
+        # 토크나이징 최적화 - DDP 환경에서 프로세스 수 조정
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        # 전체 프로세스를 GPU 수로 나눔 (각 rank가 CPU 코어를 공유)
+        tokenize_num_proc = max(1, args.num_proc // world_size)
+        tokenize_batch_size = 10000  # 배치 크기 최적화 (안정성과 속도 균형)
+        tokenize_writer_batch = 50000  # I/O 최적화
         
-        logger.info(f"  Tokenizing with {tokenize_num_proc} processes, batch_size={tokenize_batch_size}...")
+        logger.info(f"  ⚡ Tokenizing with {tokenize_num_proc} processes (total {world_size} ranks), batch_size={tokenize_batch_size}...")
         
         tokenized_dataset = dataset["train"].map(
             tokenize_function,
@@ -1314,7 +1348,7 @@ def main():
     )
 
     # 기타
-    parser.add_argument("--num_proc", type=int, default=16, help="Number of processes for tokenization (increased for speed)")
+    parser.add_argument("--num_proc", type=int, default=32, help="Number of processes for tokenization (increased for speed)")
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     
     # 추가 최적화 옵션
