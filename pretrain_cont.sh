@@ -1,13 +1,16 @@
 #!/bin/bash
-# MOAI-LLM Pretrain Script (Multi-Dataset)
+# MOAI-LLM Pretrain Continue Script (Multi-Dataset)
 # 
 # 데이터셋:
-# - sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft (instruction/output)
-# - BCCard/BCAI-Finance-Kor-1862K (instruction/output)
-# - HAERAE-HUB/KOREAN-WEBTEXT (text)
+# - nvidia/OpenCodeGeneticInstruct:qwen2.5-32b-instruct
+# - BCCard/BCAI-Finance-Kor-1862K
+# - HAERAE-HUB/KOREAN-WEBTEXT
 #
-# Usage: ./pretrain.sh [config_size]
-# Example: ./pretrain.sh 2b
+# Usage: ./pretrain_cont.sh [config_size]
+# Example: 
+#   ./pretrain_cont.sh 2b                         # Use tensorboard (default)
+#   USE_WANDB=true ./pretrain_cont.sh 2b          # Use W&B with default project
+#   USE_WANDB=true WANDB_PROJECT=my-project ./pretrain_cont.sh 2b  # Custom W&B project
 
 set -e
 
@@ -62,6 +65,11 @@ NUM_EPOCHS=2
 
 # Output directory
 OUTPUT_DIR="outputs/moai-${CONFIG_SIZE}"
+
+# Logging settings (W&B or Tensorboard)
+USE_WANDB=${USE_WANDB:-false}  # Set to "true" to use W&B
+WANDB_PROJECT=${WANDB_PROJECT:-"moai-llm"}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-"pretrain-cont-${CONFIG_SIZE}-$(date +%Y%m%d-%H%M%S)"}
 
 # ============================================================================
 # Dataset Configuration
@@ -206,6 +214,7 @@ echo "Learning Rate:         $LEARNING_RATE"
 echo "Warmup Steps:          $WARMUP_STEPS"
 echo "Epochs:                $NUM_EPOCHS"
 echo "Packing:               Enabled"
+echo "Logging:               $([ "$USE_WANDB" = "true" ] && echo "W&B ($WANDB_PROJECT)" || echo "Tensorboard")"
 echo "========================================================================"
 
 # ============================================================================
@@ -229,6 +238,12 @@ while lsof -Pi :$MASTER_PORT -sTCP:LISTEN -t >/dev/null 2>&1 ; do
     MASTER_PORT=$((MASTER_PORT + 1))
 done
 echo "Using master port: $MASTER_PORT"
+
+# Build wandb arguments conditionally
+WANDB_ARGS=""
+if [ "$USE_WANDB" = "true" ]; then
+    WANDB_ARGS="--use_wandb --wandb_project $WANDB_PROJECT --wandb_run_name $WANDB_RUN_NAME"
+fi
 
 torchrun \
     --nproc_per_node=$NUM_GPUS \
@@ -255,7 +270,8 @@ torchrun \
     --dataloader_num_workers 8 \
     --logging_steps 10 \
     --save_steps 500 \
-    --save_total_limit 3
+    --save_total_limit 3 \
+    $WANDB_ARGS
 
 echo "========================================================================"
 echo "✅ Pretrain completed!"
