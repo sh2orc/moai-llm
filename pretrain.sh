@@ -184,9 +184,16 @@ echo "  --model_config $MODEL_CONFIG \\"
 echo "  --output_dir $OUTPUT_DIR \\"
 echo "  ..."
 
+# Find available port
+MASTER_PORT=${MASTER_PORT:-29500}
+while lsof -Pi :$MASTER_PORT -sTCP:LISTEN -t >/dev/null 2>&1 ; do
+    MASTER_PORT=$((MASTER_PORT + 1))
+done
+echo "Using master port: $MASTER_PORT"
+
 torchrun \
     --nproc_per_node=$NUM_GPUS \
-    --master_port=29500 \
+    --master_port=$MASTER_PORT \
     train.py \
     --mode pretrain \
     --dataset "${DATASETS[@]}" \

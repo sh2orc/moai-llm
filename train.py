@@ -200,10 +200,12 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     DDP 환경에서는 rank 0만 데이터셋을 다운로드하고, 다른 프로세스는 대기합니다.
     """
     # DDP 환경 확인
-    is_distributed = torch.distributed.is_initialized() if hasattr(torch.distributed, 'is_initialized') else False
-    is_main_process = True
-    if is_distributed:
+    try:
+        is_distributed = torch.distributed.is_initialized()
         is_main_process = torch.distributed.get_rank() == 0
+    except (AttributeError, RuntimeError):
+        is_distributed = False
+        is_main_process = True
     
     # dataset_name:config_name 형식 파싱
     if ":" in dataset_name:
@@ -213,20 +215,39 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None) ->
     
     logger.info(f"  Loading HuggingFace: {dataset_name}")
     
-    # DDP 환경에서는 rank 0만 다운로드
-    if is_distributed and not is_main_process:
-        # 다른 프로세스는 rank 0이 다운로드 완료할 때까지 대기
+    # DDP 환경에서는 rank 0만 데이터셋을 다운로드
+    if is_distributed:
+        # 모든 프로세스가 동기화 지점에 도달할 때까지 대기
         torch.distributed.barrier()
-    
-    if dataset_config:
-        logger.info(f"    Config: {dataset_config}")
-        raw_dataset = load_dataset(dataset_name, dataset_config)
+        
+        if is_main_process:
+            # rank 0만 데이터셋 다운로드
+            logger.info(f"    [Rank 0] Downloading dataset...")
+            if dataset_config:
+                logger.info(f"    Config: {dataset_config}")
+                raw_dataset = load_dataset(dataset_name, dataset_config)
+            else:
+                raw_dataset = load_dataset(dataset_name)
+            logger.info(f"    [Rank 0] Dataset download completed")
+            # 다운로드 완료 후 barrier
+            torch.distributed.barrier()
+        else:
+            # 다른 프로세스는 rank 0이 다운로드 완료할 때까지 대기
+            logger.info(f"    [Rank {torch.distributed.get_rank()}] Waiting for dataset download...")
+            torch.distributed.barrier()
+            # barrier 통과 후 캐시된 데이터셋 로드 (다운로드 없이)
+            logger.info(f"    [Rank {torch.distributed.get_rank()}] Loading cached dataset...")
+            if dataset_config:
+                raw_dataset = load_dataset(dataset_name, dataset_config, download_mode="reuse_cache_if_exists")
+            else:
+                raw_dataset = load_dataset(dataset_name, download_mode="reuse_cache_if_exists")
     else:
-        raw_dataset = load_dataset(dataset_name)
-    
-    # rank 0이 다운로드 완료한 후 다른 프로세스도 진행
-    if is_distributed and is_main_process:
-        torch.distributed.barrier()
+        # 단일 프로세스 환경
+        if dataset_config:
+            logger.info(f"    Config: {dataset_config}")
+            raw_dataset = load_dataset(dataset_name, dataset_config)
+        else:
+            raw_dataset = load_dataset(dataset_name)
     
     # train split 사용
     train_data = raw_dataset.get("train", raw_dataset)
