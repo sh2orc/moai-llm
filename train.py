@@ -335,22 +335,36 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             cache_marker.touch()
             logger.info(f"    [Rank 0] Created conversion marker: {cache_marker}")
             
-            # 빈 텍스트 필터링 (단일 프로세스로 안전하게)
-            # 다른 rank들이 캐시를 로드하는 동안 충돌 방지
-            logger.info(f"    [Rank 0] Filtering empty texts (single process for safety)...")
+            # 빈 텍스트 필터링 (병렬 처리로 빠르게)
+            filter_num_proc = min(dataset_num_proc // 2, 4)
+            logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
             converted = converted.filter(
                 lambda x: len(x["text"]) > 0, 
-                num_proc=1,  # 단일 프로세스로 안전하게
+                num_proc=filter_num_proc,  # 병렬 처리로 빠르게
                 writer_batch_size=dataset_writer_batch_size,
                 keep_in_memory=False,
+                load_from_cache_file=True,  # 캐시 활용
             )
             
             logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
             
             # 최종 결과를 디스크에 저장 (다른 rank들이 안전하게 로드할 수 있도록)
             dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
-            logger.info(f"    [Rank 0] Saving final dataset to: {dataset_save_path}")
-            converted.save_to_disk(str(dataset_save_path))
+            
+            # 이미 저장된 파일이 있으면 건너뛰기 (속도 향상)
+            if dataset_save_path.exists():
+                logger.info(f"    [Rank 0] Dataset already saved at: {dataset_save_path}")
+            else:
+                logger.info(f"    [Rank 0] Saving final dataset to: {dataset_save_path}")
+                import time
+                save_start = time.time()
+                # num_shards 지정으로 병렬 저장 최적화
+                converted.save_to_disk(
+                    str(dataset_save_path),
+                    num_shards=dataset_num_proc,  # 병렬 저장
+                )
+                save_time = time.time() - save_start
+                logger.info(f"    [Rank 0] Dataset saved in {save_time:.1f}s")
             
             # 필터 완료 마커 생성
             filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
@@ -393,17 +407,26 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             except (RuntimeError, ValueError, AttributeError):
                 time.sleep(2)
             
-            # 추가 대기: rank 0의 파일 저장이 완전히 완료되도록
-            time.sleep(3)
-            
             # rank 0이 저장한 최종 데이터셋을 직접 로드 (캐시 충돌 없음!)
             dataset_save_path = Path(cache_home) / "datasets" / f"{cache_hash}_final"
             logger.info(f"    [Rank {current_rank}] Loading final dataset from: {dataset_save_path}")
             
-            from datasets import Dataset
-            converted = Dataset.load_from_disk(str(dataset_save_path))
+            # 파일이 완전히 준비될 때까지 짧은 대기 (파일 시스템 동기화)
+            max_attempts = 60  # 최대 60번 시도 (30초)
+            for attempt in range(max_attempts):
+                if dataset_save_path.exists() and (dataset_save_path / "dataset_info.json").exists():
+                    break
+                time.sleep(0.5)
+            else:
+                logger.warning(f"    [Rank {current_rank}] Dataset files not fully ready, proceeding anyway...")
             
-            logger.info(f"    [Rank {current_rank}] Loaded from disk: {len(converted):,} samples")
+            from datasets import Dataset
+            import time
+            load_start = time.time()
+            converted = Dataset.load_from_disk(str(dataset_save_path))
+            load_time = time.time() - load_start
+            
+            logger.info(f"    [Rank {current_rank}] Loaded from disk in {load_time:.1f}s: {len(converted):,} samples")
             
     else:
         # 단일 프로세스 환경
