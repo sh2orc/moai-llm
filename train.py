@@ -770,9 +770,15 @@ def train_sequential(args):
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
         
-        # 저장 확인 (rank 0에서)
+        # 저장 확인 및 dtype 유지 (rank 0에서)
         is_main_process = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
         if is_main_process:
+            # 모델 dtype 확인 및 bf16/fp16으로 재저장
+            model_dtype = next(model.parameters()).dtype
+            if model_dtype in (torch.bfloat16, torch.float16):
+                logger.info(f"💾 Re-saving model in {model_dtype} format...")
+                model.save_pretrained(checkpoint_path, torch_dtype=model_dtype, safe_serialization=True)
+            
             saved_files = list(Path(checkpoint_path).glob("*.safetensors")) + \
                          list(Path(checkpoint_path).glob("*.bin"))
             if saved_files:
@@ -981,6 +987,11 @@ def train(args):
     logger.info("💾 Saving model...")
     final_path = Path(args.output_dir) / "final_model"
     trainer.save_model(str(final_path))
+    # 모델 dtype 확인 및 bf16/fp16으로 저장
+    model_dtype = next(model.parameters()).dtype
+    if model_dtype in (torch.bfloat16, torch.float16):
+        logger.info(f"💾 Saving model in {model_dtype} format...")
+        model.save_pretrained(str(final_path), torch_dtype=model_dtype, safe_serialization=True)
 
     logger.info("="*80)
     logger.info(f"✅ Training completed!")
