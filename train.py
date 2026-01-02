@@ -347,22 +347,27 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 desc=f"Converting {dataset_name}",
             )
             
-            # 빈 텍스트 필터링 (병렬 처리)
-            filter_num_proc = min(dataset_num_proc // 2, 4)
-            logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
+            # 변환 완료 마커 생성 (filter 전에!)
+            cache_marker.parent.mkdir(parents=True, exist_ok=True)
+            cache_marker.touch()
+            logger.info(f"    [Rank 0] Created conversion marker: {cache_marker}")
+            
+            # 빈 텍스트 필터링 (단일 프로세스로 안전하게)
+            # 다른 rank들이 캐시를 로드하는 동안 충돌 방지
+            logger.info(f"    [Rank 0] Filtering empty texts (single process for safety)...")
             converted = converted.filter(
                 lambda x: len(x["text"]) > 0, 
-                num_proc=filter_num_proc,
+                num_proc=1,  # 단일 프로세스로 안전하게
                 writer_batch_size=dataset_writer_batch_size,
                 keep_in_memory=False,
             )
             
             logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
             
-            # 완료 마커 파일 생성
-            cache_marker.parent.mkdir(parents=True, exist_ok=True)
-            cache_marker.touch()
-            logger.info(f"    [Rank 0] Created completion marker: {cache_marker}")
+            # 필터 완료 마커 생성
+            filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
+            filter_marker.touch()
+            logger.info(f"    [Rank 0] Created filter marker: {filter_marker}")
             
             # 변환 완료 후 barrier
             try:
@@ -373,23 +378,39 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 time.sleep(1)
                 
         else:
-            # 다른 프로세스는 마커 파일 생성 대기 (map 실행 안 함!)
+            # 다른 프로세스는 마커 파일 생성 대기 (map/filter 실행 안 함!)
             logger.info(f"    [Rank {current_rank}] Waiting for rank 0 conversion...")
             import time
             max_wait_time = 3600  # 최대 1시간 대기
             waited = 0
             check_interval = 5
             
+            # 변환 완료 마커 대기
             while not cache_marker.exists() and waited < max_wait_time:
                 time.sleep(check_interval)
                 waited += check_interval
                 if waited % 60 == 0:  # 1분마다 로그
-                    logger.info(f"    [Rank {current_rank}] Still waiting... ({waited}s elapsed)")
+                    logger.info(f"    [Rank {current_rank}] Still waiting for conversion... ({waited}s elapsed)")
             
             if not cache_marker.exists():
                 raise TimeoutError(f"Rank {current_rank}: Dataset conversion timeout after {max_wait_time}s")
             
-            logger.info(f"    [Rank {current_rank}] Marker detected, loading cached dataset...")
+            logger.info(f"    [Rank {current_rank}] Conversion marker detected!")
+            
+            # 필터 완료 마커도 대기 (중요!)
+            filter_marker = Path(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
+            logger.info(f"    [Rank {current_rank}] Waiting for rank 0 filtering...")
+            filter_waited = 0
+            while not filter_marker.exists() and filter_waited < max_wait_time:
+                time.sleep(check_interval)
+                filter_waited += check_interval
+                if filter_waited % 60 == 0:
+                    logger.info(f"    [Rank {current_rank}] Still waiting for filter... ({filter_waited}s elapsed)")
+            
+            if not filter_marker.exists():
+                raise TimeoutError(f"Rank {current_rank}: Dataset filtering timeout after {max_wait_time}s")
+            
+            logger.info(f"    [Rank {current_rank}] Filter marker detected, loading cached dataset...")
             
             # barrier 동기화
             try:
@@ -412,9 +433,11 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 desc=f"[Rank {current_rank}] Loading from cache",
             )
             
+            # filter도 캐시에서만 로드 (재실행하지만 캐시 히트)
             converted = converted.filter(
                 lambda x: len(x["text"]) > 0, 
                 num_proc=1,
+                load_from_cache_file=True,  # 캐시에서만 로드
                 writer_batch_size=dataset_writer_batch_size,
                 keep_in_memory=False,
             )
@@ -436,10 +459,12 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             desc=f"Converting {dataset_name}",
         )
         
+        logger.info(f"    Filtering empty texts...")
         filter_num_proc = min(dataset_num_proc // 2, 4)
         converted = converted.filter(
             lambda x: len(x["text"]) > 0, 
             num_proc=filter_num_proc,
+            load_from_cache_file=True,  # 캐시 사용
             writer_batch_size=dataset_writer_batch_size,
             keep_in_memory=False,
         )

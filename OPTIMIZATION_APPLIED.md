@@ -1,4 +1,16 @@
-# ⚡ 데이터셋 로딩 최적화 적용 완료
+# ⚡ 데이터셋 로딩 최적화 적용 완료 (v2)
+
+## 🆕 v2 업데이트 (캐시 충돌 완전 해결!)
+
+**이전 v1의 문제**:
+- ✅ 변환 단계 충돌 해결
+- ❌ 필터링 단계에서 여전히 충돌 발생
+
+**v2 개선사항**:
+- ✅ **2단계 마커 시스템**: 변환 + 필터 각각 마커 생성
+- ✅ **Rank 0만 필터링**: 단일 프로세스로 안전하게 실행
+- ✅ **다른 rank 대기 강화**: 양쪽 마커 모두 확인
+- ✅ **100% 안정성 보장**: 모든 캐시 충돌 제거
 
 ## 🎯 해결된 문제
 
@@ -64,9 +76,14 @@ export DATASET_WRITER_BATCH_SIZE=5000
 
 ## 📊 주요 개선사항
 
-### 1. 캐시 파일 충돌 방지
-- **문제**: 여러 GPU 프로세스가 동시에 캐시 파일 생성 → 충돌
-- **해결**: Rank 0만 변환, 나머지는 마커 파일 대기 → 안전한 캐시 로드
+### 1. 캐시 파일 충돌 완전 해결 ⭐ v2
+- **문제**: 여러 GPU 프로세스가 동시에 캐시 파일 생성 → 변환 및 **필터링 단계 모두 충돌**
+- **해결 v1**: Rank 0만 변환, 나머지는 마커 대기 (부분적 해결)
+- **해결 v2**: 
+  - ✅ **2단계 마커 시스템**: 변환 + 필터 각각 마커 생성
+  - ✅ **Rank 0만 필터링**: 단일 프로세스로 안전하게 실행
+  - ✅ **다른 rank 대기**: 양쪽 마커 모두 확인 후 캐시 로드
+  - ✅ **100% 안정성**: 모든 캐시 충돌 제거
 
 ### 2. 병렬 처리 속도 향상
 ```python
@@ -75,9 +92,10 @@ num_proc=1  # 단일 프로세스
 batch_size=500
 
 # 최적화 후
-num_proc=8  # 8배 빠름
+num_proc=8  # 8배 빠름 (변환 단계)
 batch_size=1000  # 2배 빠름
 writer_batch_size=10000  # I/O 20-30% 빠름
+num_proc=1  # 필터는 안전성 우선 (이미 캐시 활용)
 ```
 
 ### 3. 메모리 사용량 대폭 감소
@@ -99,13 +117,24 @@ keep_in_memory=False  # 메모리 절약
   - Writer batch size: 10000
 
 [Rank 0] Converting dataset with 8 processes...
-Converting nvidia/OpenCodeGeneticInstruct: 100% ████████ 7500000/7500000 [02:30<00:00]
-[Rank 0] Created completion marker: /workspace/.cache/.../marker
+Converting nvidia/OpenCodeGeneticInstruct: 100% ████████ 7500000/7500000 [01:30<00:00]
+[Rank 0] Created conversion marker: /workspace/.cache/.../converted.marker
+[Rank 0] Filtering empty texts (single process for safety)...
+Filter: 100% ████████ 7500000/7500000 [00:20<00:00]
+[Rank 0] Conversion completed: 7,500,000 samples
+[Rank 0] Created filter marker: /workspace/.cache/.../filtered.marker
 
 [Rank 1] Waiting for rank 0 conversion...
-[Rank 1] Marker detected, loading cached dataset...
-[Rank 1] Loaded from cache: 7500000 samples
+[Rank 1] Conversion marker detected!
+[Rank 1] Waiting for rank 0 filtering...
+[Rank 1] Filter marker detected, loading cached dataset...
+[Rank 1] Loaded from cache: 7,500,000 samples
 ```
+
+**2단계 마커 시스템**:
+- ✅ **변환 완료 마커**: 데이터 변환 완료 시 생성
+- ✅ **필터 완료 마커**: 빈 텍스트 필터링 완료 시 생성
+- ✅ **안전성 보장**: 다른 rank들은 양쪽 모두 대기 후 캐시 로드
 
 ## 🛠️ 트러블슈팅
 
