@@ -1024,13 +1024,15 @@ def train_sequential(args):
                             add_special_tokens=True,
                         )
                     
-                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    # ⚡ 최적화: 프로세스 수를 줄이고, 각 프로세스에서 Fast Tokenizer 병렬화 활용
+                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # 각 프로세스에서 병렬화
                     import multiprocessing
                     cpu_count = multiprocessing.cpu_count()
-                    # CPU 많으면 더 공격적으로 사용 (48 cores → 38 proc, 96 cores → 48 proc)
-                    optimal_num_proc = min(48, max(16, int(cpu_count * 0.8)))
+                    # 적당한 프로세스 수 (너무 많으면 오버헤드)
+                    optimal_num_proc = min(16, max(8, cpu_count // 8))  # 96 cores → 12 proc
                     
-                    logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes (from {cpu_count} CPUs), batch_size=50000")
+                    logger.info(f"  ⚡ Optimized: {optimal_num_proc} processes × Fast Tokenizer threading (from {cpu_count} CPUs)")
+                    logger.info(f"     batch_size=50000, each process uses multi-threading")
                     
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
@@ -1067,13 +1069,14 @@ def train_sequential(args):
                             return_special_tokens_mask=True,
                         )
                     
-                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    # ⚡ 최적화: 프로세스 수를 줄이고, 각 프로세스에서 Fast Tokenizer 병렬화 활용
+                    os.environ["TOKENIZERS_PARALLELISM"] = "true"  # 각 프로세스에서 병렬화
                     import multiprocessing
                     cpu_count = multiprocessing.cpu_count()
-                    # CPU 많으면 더 공격적으로 사용 (48 cores → 38 proc, 96 cores → 48 proc)
-                    optimal_num_proc = min(48, max(16, int(cpu_count * 0.8)))
+                    # 적당한 프로세스 수 (너무 많으면 오버헤드)
+                    optimal_num_proc = min(16, max(8, cpu_count // 8))  # 96 cores → 12 proc
                     
-                    logger.info(f"  ⚡ Multiprocessing: {optimal_num_proc} processes (from {cpu_count} CPUs)")
+                    logger.info(f"  ⚡ Optimized: {optimal_num_proc} processes × Fast Tokenizer threading (from {cpu_count} CPUs)")
                     
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,

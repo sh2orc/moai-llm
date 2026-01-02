@@ -160,7 +160,7 @@ echo "  - Writer batch size: $DATASET_WRITER_BATCH_SIZE"
 # ============================================================================
 # Rust 토크나이저 병렬화 활성화 (중요!)
 export TOKENIZERS_PARALLELISM=true
-export RAYON_NUM_THREADS=48  # Rust 병렬 처리 스레드 수
+export RAYON_NUM_THREADS=8  # Rust 병렬 처리 스레드 수 (프로세스당)
 
 # Python 멀티프로세싱 최적화
 export PYTHONUNBUFFERED=1
@@ -176,11 +176,11 @@ export ARROW_IO_THREADS=16  # I/O 스레드 수
 echo "⚡ Sequential Mode Optimization:"
 echo "  - Fast Tokenizer: ENABLED (Rust-based)"
 echo "  - Strategy: Pre-tokenize ALL datasets BEFORE DDP"
-echo "  - Multiprocessing: 32+ processes per dataset"
+echo "  - Processes: 12 × 8 threads each = 96 CPU cores"
 echo "  - Batch size: 50000 (optimized for speed)"
 echo "  - Writer batch: 100000 (optimized I/O)"
 echo "  - Cache reuse: ENABLED"
-echo "  - Expected: ~100,000+ examples/s per dataset!"
+echo "  - Expected: Fast parallel tokenization!"
 
 # TF32 활성화 (Ampere+ GPU, ~2x matmul 속도)
 export NVIDIA_TF32_OVERRIDE=1
