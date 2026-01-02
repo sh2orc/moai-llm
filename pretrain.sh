@@ -136,9 +136,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_thres
 export CUDA_LAUNCH_BLOCKING=0       # 비동기 커널 실행
 export TORCH_CUDNN_V8_API_ENABLED=1 # cuDNN v8 API
 
-# CPU 최적화
-export OMP_NUM_THREADS=48
-export MKL_NUM_THREADS=48
+# CPU 최적화 (학습 단계에서만 적용 - 토크나이징과 충돌 방지)
+# export OMP_NUM_THREADS=48  # STEP 2에서 설정
+# export MKL_NUM_THREADS=48  # STEP 2에서 설정
 
 # ============================================================================
 # Dataset Loading Optimization (대규모 데이터셋 최적화)
@@ -165,9 +165,9 @@ echo "  - Large (>5M): 8 procs | Medium (1-5M): 16 procs | Small (<1M): 32 procs
 # Python 멀티프로세싱 최적화
 export PYTHONUNBUFFERED=1
 
-# CPU affinity 최적화 (가능한 경우)
-export OMP_PROC_BIND=close
-export OMP_PLACES=cores
+# CPU affinity 최적화 - 토크나이징 시 multiprocessing과 충돌하므로 비활성화
+# export OMP_PROC_BIND=close  # STEP 2에서 설정
+# export OMP_PLACES=cores     # STEP 2에서 설정
 
 # PyArrow 최적화
 export ARROW_DEFAULT_MEMORY_POOL=mimalloc  # 더 빠른 메모리 할당자
@@ -304,6 +304,12 @@ echo ""
 echo "========================================================================"
 echo "🚀 STEP 2: Starting distributed training"
 echo "========================================================================"
+
+# OMP 설정 (학습 단계에서만 적용)
+export OMP_NUM_THREADS=48
+export MKL_NUM_THREADS=48
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
 
 torchrun \
     --nproc_per_node=$NUM_GPUS \
