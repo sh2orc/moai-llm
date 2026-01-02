@@ -46,6 +46,9 @@ python train.py \
         --output_dir outputs/sft
 """
 
+# Early debug print
+print("[DEBUG] Script started, importing modules...", flush=True)
+
 import argparse
 import os
 import hashlib
@@ -64,24 +67,33 @@ try:
 except ImportError:
     psutil = None  # Optional dependency
 
+print("[DEBUG] Importing torch...", flush=True)
 import torch
+
+print("[DEBUG] Importing transformers...", flush=True)
 from transformers import (
     AutoTokenizer,
     Trainer,
     TrainingArguments,
     DataCollatorForLanguageModeling,
 )
+
+print("[DEBUG] Importing datasets...", flush=True)
 from datasets import load_dataset, disable_caching
 import datasets
 
+print("[DEBUG] Configuring datasets...", flush=True)
 # Enable memory-efficient settings for large datasets
 datasets.config.IN_MEMORY_MAX_SIZE = 0  # Force memory mapping (no in-memory)
 
+print("[DEBUG] Importing moai_llm...", flush=True)
 from moai_llm.config import MoaiConfig
 from moai_llm.modeling.model import MoaiForCausalLM
 
+print("[DEBUG] Setting up logging...", flush=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
+print("[DEBUG] All imports complete!", flush=True)
 
 
 # ============================================================================
