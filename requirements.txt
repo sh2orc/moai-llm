@@ -16,6 +16,9 @@ hf_transfer
 orjson>=3.10.0  # 10-50x faster JSON (Rust)
 regex>=2024.0.0  # Rust-based regex, faster than re
 
+# System monitoring (for optimization)
+psutil>=6.1.0  # Memory and CPU monitoring
+
 # Fine-tuning dependencies
 peft>=0.18.0
 trl>=0.26.0

@@ -59,6 +59,11 @@ try:
 except ImportError:
     import json  # Fallback to standard json
 
+try:
+    import psutil  # For memory monitoring
+except ImportError:
+    psutil = None  # Optional dependency
+
 import torch
 from transformers import (
     AutoTokenizer,
@@ -336,7 +341,6 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 캐시만 로드
     if is_distributed:
         # 캐시 완료 마커 파일 경로 생성
-        import hashlib
         from pathlib import Path
         cache_home = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
         config_str = f"{dataset_name}_{dataset_config}" if dataset_config else dataset_name
@@ -744,7 +748,10 @@ def setup_model_and_tokenizer(
     logger.info(f"📝 Loading tokenizer from: {tokenizer_path}")
     import time
     tok_start = time.time()
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path,
+        use_fast=True,  # Rust 기반 고속 토크나이저 강제 사용
+    )
     tok_time = time.time() - tok_start
     logger.info(f"✓ Tokenizer loaded in {tok_time:.1f}s")
 
@@ -892,6 +899,13 @@ def train_sequential(args):
         # 3. 토큰화 (DDP 최적화: rank 0만 토크나이징, 나머지는 로드)
         logger.info("🔤 Tokenizing dataset...")
         
+        # Fast Tokenizer 검증
+        if not tokenizer.is_fast:
+            logger.warning("⚠️ WARNING: Using slow tokenizer! This will be very slow.")
+            logger.warning("⚠️ Please ensure your tokenizer supports fast mode.")
+        else:
+            logger.info("✅ Using Fast Tokenizer (Rust-based)")
+        
         # DDP 환경 확인
         is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
         is_main_process = int(os.environ.get("RANK", 0)) == 0
@@ -902,6 +916,14 @@ def train_sequential(args):
         dataset_hash = hashlib.md5(f"{src_name}_{idx}".encode()).hexdigest()[:16]
         tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
         tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+        
+        # 토크나이저 워밍업 (JIT 컴파일 및 캐시 초기화)
+        if is_main_process or not is_distributed:
+            logger.info("🔥 Warming up tokenizer...")
+            # 작은 샘플로 워밍업 (JIT 컴파일 및 캐시 초기화)
+            warmup_texts = ["Hello world " * 100] * 10
+            _ = tokenizer(warmup_texts, truncation=False, padding=False)
+            logger.info("✅ Tokenizer warmed up")
         
         if args.packing:
             logger.info(f"📦 Using sequence concatenation (packing mode)")
@@ -928,11 +950,11 @@ def train_sequential(args):
                         tokenized_ds = dataset["train"].map(
                             batch_tokenize,
                             batched=True,
-                            batch_size=10000,
-                            num_proc=args.num_proc,
+                            batch_size=20000,  # 10000 → 20000 (2배 증가)
+                            num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=True,
-                            writer_batch_size=50000,
+                            writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -985,16 +1007,23 @@ def train_sequential(args):
                 tokenized_ds = dataset["train"].map(
                     batch_tokenize,
                     batched=True,
-                    batch_size=10000,
-                    num_proc=args.num_proc,
+                    batch_size=20000,  # 10000 → 20000 (2배 증가)
+                    num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                     remove_columns=dataset["train"].column_names,
                     load_from_cache_file=True,
-                    writer_batch_size=50000,
+                    writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                     keep_in_memory=False,
                     desc="Tokenizing",
                 )
             
-            # input_ids 리스트로 변환
+            # input_ids 리스트로 변환 (스마트 메모리 활용)
+            if psutil:
+                available_memory_gb = psutil.virtual_memory().available / (1024**3)
+                if available_memory_gb > 50:  # 50GB 이상 여유가 있으면
+                    logger.info(f"✅ Sufficient RAM ({available_memory_gb:.1f}GB available), using in-memory processing")
+                else:
+                    logger.info(f"⚠️ Limited RAM ({available_memory_gb:.1f}GB available), using disk-based processing")
+            
             tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
             del tokenized_ds
             gc.collect()
@@ -1036,11 +1065,11 @@ def train_sequential(args):
                         tokenized_dataset = dataset["train"].map(
                             tokenize_function,
                             batched=True,
-                            batch_size=10000,
-                            num_proc=args.num_proc,
+                            batch_size=20000,  # 10000 → 20000 (2배 증가)
+                            num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                             remove_columns=dataset["train"].column_names,
                             load_from_cache_file=True,
-                            writer_batch_size=50000,
+                            writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                             keep_in_memory=False,
                             desc="Tokenizing",
                         )
@@ -1093,11 +1122,11 @@ def train_sequential(args):
                 tokenized_dataset = dataset["train"].map(
                     tokenize_function,
                     batched=True,
-                    batch_size=10000,
-                    num_proc=args.num_proc,
+                    batch_size=20000,  # 10000 → 20000 (2배 증가)
+                    num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                     remove_columns=dataset["train"].column_names,
                     load_from_cache_file=True,
-                    writer_batch_size=50000,
+                    writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                     keep_in_memory=False,
                     desc="Tokenizing",
                 )
@@ -1261,6 +1290,13 @@ def train(args):
     # 3. 토큰화 (DDP 최적화: rank 0만 토크나이징, 나머지는 로드)
     logger.info("🔤 Tokenizing dataset...")
     
+    # Fast Tokenizer 검증
+    if not tokenizer.is_fast:
+        logger.warning("⚠️ WARNING: Using slow tokenizer! This will be very slow.")
+        logger.warning("⚠️ Please ensure your tokenizer supports fast mode.")
+    else:
+        logger.info("✅ Using Fast Tokenizer (Rust-based)")
+    
     # DDP 환경 확인
     is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
     is_main_process = int(os.environ.get("RANK", 0)) == 0
@@ -1272,6 +1308,14 @@ def train(args):
     dataset_hash = hashlib.md5(dataset_names_str.encode()).hexdigest()[:16]
     tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
     tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+
+    # 토크나이저 워밍업 (JIT 컴파일 및 캐시 초기화)
+    if is_main_process or not is_distributed:
+        logger.info("🔥 Warming up tokenizer...")
+        # 작은 샘플로 워밍업 (JIT 컴파일 및 캐시 초기화)
+        warmup_texts = ["Hello world " * 100] * 10
+        _ = tokenizer(warmup_texts, truncation=False, padding=False)
+        logger.info("✅ Tokenizer warmed up")
 
     # Packing 모드: 시퀀스 연결 방식 사용 (pretrain/sft 둘 다 지원)
     if args.packing:
@@ -1299,11 +1343,11 @@ def train(args):
                     tokenized_ds = dataset["train"].map(
                         batch_tokenize,
                         batched=True,
-                        batch_size=10000,
-                        num_proc=args.num_proc,
+                        batch_size=20000,  # 10000 → 20000 (2배 증가)
+                        num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=True,
-                        writer_batch_size=50000,
+                        writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1356,16 +1400,23 @@ def train(args):
             tokenized_ds = dataset["train"].map(
                 batch_tokenize,
                 batched=True,
-                batch_size=10000,
-                num_proc=args.num_proc,
+                batch_size=20000,  # 10000 → 20000 (2배 증가)
+                num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,
-                writer_batch_size=50000,
+                writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                 keep_in_memory=False,
                 desc="Tokenizing",
             )
         
-        # input_ids 리스트로 변환
+        # input_ids 리스트로 변환 (스마트 메모리 활용)
+        if psutil:
+            available_memory_gb = psutil.virtual_memory().available / (1024**3)
+            if available_memory_gb > 50:  # 50GB 이상 여유가 있으면
+                logger.info(f"✅ Sufficient RAM ({available_memory_gb:.1f}GB available), using in-memory processing")
+            else:
+                logger.info(f"⚠️ Limited RAM ({available_memory_gb:.1f}GB available), using disk-based processing")
+        
         tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
         del tokenized_ds
         
@@ -1408,11 +1459,11 @@ def train(args):
                     tokenized_dataset = dataset["train"].map(
                         tokenize_function,
                         batched=True,
-                        batch_size=10000,
-                        num_proc=args.num_proc,
+                        batch_size=20000,  # 10000 → 20000 (2배 증가)
+                        num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                         remove_columns=dataset["train"].column_names,
                         load_from_cache_file=True,
-                        writer_batch_size=50000,
+                        writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                         keep_in_memory=False,
                         desc="Tokenizing",
                     )
@@ -1465,11 +1516,11 @@ def train(args):
             tokenized_dataset = dataset["train"].map(
                 tokenize_function,
                 batched=True,
-                batch_size=10000,
-                num_proc=args.num_proc,
+                batch_size=20000,  # 10000 → 20000 (2배 증가)
+                num_proc=min(args.num_proc, 48),  # CPU 코어 수에 맞게 48까지 허용
                 remove_columns=dataset["train"].column_names,
                 load_from_cache_file=True,
-                writer_batch_size=50000,
+                writer_batch_size=100000,  # 50000 → 100000 (2배 증가, I/O 감소)
                 keep_in_memory=False,
                 desc="Tokenizing",
             )
@@ -1644,7 +1695,7 @@ def main():
     )
 
     # 기타
-    parser.add_argument("--num_proc", type=int, default=32, help="Number of processes for tokenization (increased for speed)")
+    parser.add_argument("--num_proc", type=int, default=48, help="Number of processes for tokenization (default: 48 for high-performance CPUs)")
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     
     # 추가 최적화 옵션
