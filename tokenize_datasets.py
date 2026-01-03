@@ -21,6 +21,10 @@ TOKENIZERS_PARALLELISM=true로 Rust Fast Tokenizer의 내부 병렬 처리를 �
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
+# Rust Rayon 스레드 풀 최적화
+cpu_count = os.cpu_count() or 8
+os.environ["RAYON_NUM_THREADS"] = str(cpu_count)
+
 import argparse
 import hashlib
 import logging

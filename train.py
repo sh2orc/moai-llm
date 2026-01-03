@@ -101,6 +101,10 @@ ENV_TOKENIZERS_PARALLELISM = "TOKENIZERS_PARALLELISM"
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
+# Rust Rayon 스레드 풀 최적화
+cpu_count = os.cpu_count() or 8
+os.environ["RAYON_NUM_THREADS"] = str(cpu_count)
+
 import sys
 import time as time_module
 from pathlib import Path as PathType
@@ -575,7 +579,7 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    datasets.map() 기반 토크나이징 (안정적)
+    datasets.map() 우회, Rust 병렬화 직접 활용
 
     Args:
         dataset: HuggingFace Dataset 객체
@@ -583,56 +587,71 @@ def tokenize_dataset(
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
         packing: True면 truncation 없이 토큰화
-        num_proc: 프로세스 수 (None이면 1)
+        num_proc: 사용 안함 (Rust 내부 병렬화)
 
     Returns:
         토큰화된 Dataset 객체
     """
     total_samples = len(dataset)
-
-    # num_proc 설정
-    if num_proc is None:
-        num_proc = 1  # 단일 프로세스 (Rust 내부 병렬화 활용)
-
-    batch_size = 100000  # 대형 배치로 Rust 멀티스레딩 최대 활용
+    batch_size = 20000  # Rust 병렬화 최적 배치 크기
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Processes: {num_proc} (Rust internal parallelism)")
+    logger.info(f"   Method: Direct Rust parallelism (bypass datasets.map)")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
     logger.info(f"   TOKENIZERS_PARALLELISM: {os.environ.get('TOKENIZERS_PARALLELISM', 'not set')}")
+    logger.info(f"   RAYON_NUM_THREADS: {os.environ.get('RAYON_NUM_THREADS', 'auto')}")
 
     start_time = time.time()
 
-    # 토크나이징 함수
-    def batch_tokenize(examples):
-        if packing:
-            return tokenizer(
-                examples[text_column],
-                truncation=False,
-                padding=False,
-                add_special_tokens=True,
-            )
-        else:
-            return tokenizer(
-                examples[text_column],
-                truncation=True,
-                max_length=max_seq_length,
-                padding=False,
-                add_special_tokens=True,
-            )
+    # 1. 전체 텍스트 추출 (Arrow 기반이라 빠름)
+    logger.info(f"   Extracting texts from dataset...")
+    all_texts = dataset[text_column]
 
-    # datasets.map() 사용
-    tokenized = dataset.map(
-        batch_tokenize,
-        batched=True,
-        batch_size=batch_size,
-        num_proc=num_proc,
-        remove_columns=dataset.column_names,
-        load_from_cache_file=False,
-        desc=f"Tokenizing",
-    )
+    # 2. 청크로 나눠서 직접 토크나이징 (datasets.map() 우회)
+    logger.info(f"   Tokenizing {len(all_texts):,} texts in batches of {batch_size:,}...")
+    all_input_ids = []
+    num_batches = (len(all_texts) + batch_size - 1) // batch_size
+
+    for i in range(0, len(all_texts), batch_size):
+        batch_idx = i // batch_size + 1
+        end_idx = min(i + batch_size, len(all_texts))
+        batch_texts = all_texts[i:end_idx]
+
+        # Rust tokenizer가 내부적으로 병렬 처리
+        encoded = tokenizer(
+            batch_texts,
+            truncation=not packing,
+            max_length=max_seq_length if not packing else None,
+            padding=False,
+            add_special_tokens=True,
+            return_tensors=None
+        )
+
+        all_input_ids.extend(encoded['input_ids'])
+
+        # 메모리 해제
+        del encoded
+        del batch_texts
+        gc.collect()
+
+        # 진행 상황 로깅
+        if batch_idx % 10 == 0 or batch_idx == num_batches:
+            elapsed = time.time() - start_time
+            processed = min(end_idx, len(all_texts))
+            speed = processed / elapsed if elapsed > 0 else 0
+            logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {processed:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
+
+    # 메모리 해제
+    del all_texts
+    gc.collect()
+
+    # 3. Dataset으로 변환
+    logger.info(f"   Converting to Dataset format...")
+    tokenized = HFDataset.from_dict({'input_ids': all_input_ids})
+    del all_input_ids
+    gc.collect()
 
     elapsed = time.time() - start_time
     speed = total_samples / elapsed if elapsed > 0 else 0
