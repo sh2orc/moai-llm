@@ -598,7 +598,7 @@ def tokenize_dataset(
     if num_proc is None:
         num_proc = 12  # 12개 프로세스 병렬 처리
 
-    batch_size = 10000  # 배치 크기
+    batch_size = 50000  # 대형 배치로 오버헤드 최소화
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
