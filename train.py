@@ -605,19 +605,18 @@ def tokenize_dataset(
 
     start_time = time.time()
 
-    # 1. 전체 텍스트 추출 (Arrow 기반이라 빠름)
-    logger.info(f"   Extracting texts from dataset...")
-    all_texts = dataset[text_column]
-
-    # 2. 청크로 나눠서 직접 토크나이징 (datasets.map() 우회)
-    logger.info(f"   Tokenizing {len(all_texts):,} texts in batches of {batch_size:,}...")
+    # 청크로 나눠서 직접 토크나이징 (메모리 효율적)
+    logger.info(f"   Tokenizing {total_samples:,} texts in batches of {batch_size:,}...")
     all_input_ids = []
-    num_batches = (len(all_texts) + batch_size - 1) // batch_size
+    num_batches = (total_samples + batch_size - 1) // batch_size
 
-    for i in range(0, len(all_texts), batch_size):
+    for i in range(0, total_samples, batch_size):
         batch_idx = i // batch_size + 1
-        end_idx = min(i + batch_size, len(all_texts))
-        batch_texts = all_texts[i:end_idx]
+        end_idx = min(i + batch_size, total_samples)
+
+        # dataset에서 배치만 추출 (메모리 효율적)
+        batch_dataset = dataset.select(range(i, end_idx))
+        batch_texts = batch_dataset[text_column]
 
         # Rust tokenizer가 내부적으로 병렬 처리
         encoded = tokenizer(
@@ -634,18 +633,15 @@ def tokenize_dataset(
         # 메모리 해제
         del encoded
         del batch_texts
+        del batch_dataset
         gc.collect()
 
         # 진행 상황 로깅
         if batch_idx % 10 == 0 or batch_idx == num_batches:
             elapsed = time.time() - start_time
-            processed = min(end_idx, len(all_texts))
-            speed = processed / elapsed if elapsed > 0 else 0
-            logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {processed:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
+            speed = end_idx / elapsed if elapsed > 0 else 0
+            logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {end_idx:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
 
-    # 메모리 해제
-    del all_texts
-    gc.collect()
 
     # 3. Dataset으로 변환
     logger.info(f"   Converting to Dataset format...")
