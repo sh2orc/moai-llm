@@ -65,18 +65,18 @@ MIN_CHUNK_LENGTH = 128  # Minimum tokens per chunk
 WARMUP_STEPS_FIRST_STAGE = 2000  # For first training stage
 WARMUP_STEPS_RESUME = 100  # For resumed training
 
-# Default batch sizes (메모리 최적화)
-BATCH_SIZE_LARGE_DATASET = 100  # 대규모 데이터셋: 메모리 절약 우선
-BATCH_SIZE_DEFAULT = 200  # 기본: 균형
-WRITER_BATCH_SIZE = 1000  # 디스크 쓰기 배치
+# Default batch sizes (Rust Fast Tokenizer 단일 프로세스 최적화)
+BATCH_SIZE_LARGE_DATASET = 1000  # 대규모: Rust 성능 활용
+BATCH_SIZE_DEFAULT = 2000  # 기본: 단일 프로세스로 큰 배치
+WRITER_BATCH_SIZE = 10000  # 디스크 쓰기 배치
 
-# Default process counts (메모리 최적화)
-DEFAULT_NUM_PROC = 4  # 메모리 안정성 우선
-FILTER_NUM_PROC_DIVISOR = 2  # num_proc // 2 for filtering
-MAX_FILTER_NUM_PROC = 2  # 필터링은 더 적은 프로세스
+# Default process counts (단일 프로세스로 메모리 안정성 + Rust 속도)
+DEFAULT_NUM_PROC = 1  # Rust Fast Tokenizer는 단일 프로세스가 가장 빠름
+FILTER_NUM_PROC_DIVISOR = 1  # 필터링도 단일 프로세스
+MAX_FILTER_NUM_PROC = 1  # 메모리 안정성
 
 # Performance settings
-ESTIMATED_TOKENIZATION_SPEED = 2000  # samples/sec per process
+ESTIMATED_TOKENIZATION_SPEED = 5000  # samples/sec (Rust Fast Tokenizer 단일 프로세스)
 WARMUP_TEXT_PATTERN = "Hello world " * 100
 WARMUP_TEXT_COUNT = 10
 
@@ -326,26 +326,10 @@ def calculate_optimal_num_proc(total_samples: int, cpu_count: int, available_mem
         else:
             available_memory = 16 * 1024**3  # 16GB 기본값
 
-    # 프로세스당 약 10GB 메모리 사용 가정 (안전 마진 포함)
-    # 토크나이징은 실제로 프로세스당 많은 메모리를 사용함
-    estimated_memory_per_proc = 10 * 1024**3
-    max_proc_by_memory = max(1, available_memory // estimated_memory_per_proc)
-
-    # CPU 기반 제한 (시스템용 2 코어 유지)
-    max_proc_by_cpu = max(1, cpu_count - 2)
-
-    # 데이터 크기 기반 최적화 (메모리 안정성 최우선)
-    if total_samples > DATASET_SIZE_LARGE:
-        # 대규모: 안정성 최우선 (메모리 폭발 방지)
-        optimal_proc = min(2, max_proc_by_memory, max_proc_by_cpu)
-    elif total_samples > DATASET_SIZE_MEDIUM:
-        # 중규모: 안정성 우선
-        optimal_proc = min(4, max_proc_by_memory, max_proc_by_cpu)
-    else:
-        # 소규모: 적당한 속도
-        optimal_proc = min(6, max_proc_by_memory, max_proc_by_cpu)
-
-    return optimal_proc
+    # Rust Fast Tokenizer는 단일 프로세스가 가장 효율적
+    # 멀티프로세싱 오버헤드 > Rust 병렬 처리 이점
+    # 메모리 안정성도 최고
+    return 1
 
 
 def get_tokenization_env_config() -> Dict[str, int]:
