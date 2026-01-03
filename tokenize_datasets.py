@@ -120,48 +120,48 @@ def tokenize_single_dataset(
         packing=args.packing,
     )
 
-    # Packing (선택적) - PyArrow 스트리밍 기반 (파일 페이징)
+    # Packing (선택적) - PyArrow 스트리밍 + 점진적 디스크 쓰기
     if args.packing:
         import tempfile
         import shutil
+        from datasets import load_from_disk, concatenate_datasets
 
-        logger.info(f"  📦 Packing sequences (PyArrow streaming for memory efficiency)...")
+        logger.info(f"  📦 Packing sequences (incremental disk writing)...")
 
         total_samples = len(tokenized_ds)
         logger.info(f"     Total samples: {total_samples:,}")
 
-        # 1. 임시 디렉토리에 Arrow 포맷으로 저장 (디스크 페이징 시작)
+        # 임시 디렉토리 생성
         temp_dir = Path(tempfile.mkdtemp(prefix="moai_packing_"))
         try:
-            logger.info(f"     Saving to temporary Arrow files...")
+            # 1. 토크나이징 결과를 임시 Arrow 파일로 저장
+            logger.info(f"     Saving tokenized data to disk...")
             tokenized_ds.save_to_disk(str(temp_dir / "tokenized"))
             del tokenized_ds
             gc.collect()
 
-            # 2. 스트리밍 방식으로 청크 단위 packing
-            STREAM_BATCH_SIZE = 500000  # 50만 샘플씩 스트리밍
-            all_packed_chunks = []
-
-            # Arrow 파일에서 스트리밍 로드
-            from datasets import load_from_disk
+            # 2. 배치별 packing 후 즉시 디스크에 저장
+            STREAM_BATCH_SIZE = 500000  # 50만 샘플씩
             dataset_on_disk = load_from_disk(str(temp_dir / "tokenized"))
-
             num_batches = (total_samples + STREAM_BATCH_SIZE - 1) // STREAM_BATCH_SIZE
-            logger.info(f"     Processing {num_batches} batches of {STREAM_BATCH_SIZE:,} samples each")
+
+            logger.info(f"     Processing {num_batches} batches of {STREAM_BATCH_SIZE:,} samples")
+
+            packed_shards_dir = temp_dir / "packed_shards"
+            packed_shards_dir.mkdir()
 
             for batch_idx in range(num_batches):
                 start_idx = batch_idx * STREAM_BATCH_SIZE
                 end_idx = min(start_idx + STREAM_BATCH_SIZE, total_samples)
 
-                logger.info(f"     Batch {batch_idx+1}/{num_batches}: Loading {start_idx:,} - {end_idx:,}")
+                logger.info(f"     Batch {batch_idx+1}/{num_batches}: Loading & packing {start_idx:,} - {end_idx:,}")
 
-                # Arrow에서 배치 로드 (메모리 효율적)
+                # 배치 로드 및 packing
                 batch_data = dataset_on_disk.select(range(start_idx, end_idx))
                 tokenized_list = [{"input_ids": ids} for ids in batch_data["input_ids"]]
                 del batch_data
                 gc.collect()
 
-                logger.info(f"     Batch {batch_idx+1}/{num_batches}: Packing...")
                 packed_batch = concatenate_sequences(
                     tokenized_sequences=tokenized_list,
                     max_seq_length=args.max_seq_length,
@@ -170,18 +170,30 @@ def tokenize_single_dataset(
                 del tokenized_list
                 gc.collect()
 
-                all_packed_chunks.extend(packed_batch)
-                del packed_batch
-                gc.collect()
+                # 즉시 디스크에 저장 (메모리 누적 방지)
+                packed_batch_ds = HFDataset.from_list(packed_batch)
+                shard_path = packed_shards_dir / f"shard_{batch_idx:04d}"
+                packed_batch_ds.save_to_disk(str(shard_path))
 
-                logger.info(f"     ✓ Batch {batch_idx+1}/{num_batches} complete ({len(all_packed_chunks):,} chunks so far)")
+                logger.info(f"     ✓ Batch {batch_idx+1}/{num_batches} saved ({len(packed_batch):,} chunks)")
+
+                del packed_batch, packed_batch_ds
+                gc.collect()
 
             del dataset_on_disk
             gc.collect()
 
-            logger.info(f"  ✓ Total packed chunks: {len(all_packed_chunks):,}")
-            tokenized_dataset = HFDataset.from_list(all_packed_chunks)
-            del all_packed_chunks
+            # 3. 모든 샤드를 효율적으로 병합 (Arrow가 알아서 최적화)
+            logger.info(f"     Merging {num_batches} shards...")
+            shard_datasets = []
+            for batch_idx in range(num_batches):
+                shard_path = packed_shards_dir / f"shard_{batch_idx:04d}"
+                shard_datasets.append(load_from_disk(str(shard_path)))
+
+            tokenized_dataset = concatenate_datasets(shard_datasets)
+            logger.info(f"  ✓ Total packed chunks: {len(tokenized_dataset):,}")
+
+            del shard_datasets
             gc.collect()
 
         finally:
