@@ -70,13 +70,13 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (Rust Fast Tokenizer 단일 프로세스 최적화)
-DEFAULT_NUM_PROC = 1  # datasets.map() fork 방지 → TOKENIZERS_PARALLELISM=true 유지
-FILTER_NUM_PROC_DIVISOR = 1  # 필터링도 단일 프로세스
-MAX_FILTER_NUM_PROC = 1  # 메모리 안정성
+# Default process counts (멀티프로세스 병렬 처리)
+DEFAULT_NUM_PROC = 8  # datasets.map() 병렬 처리
+FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스 (CPU 개수 / 2)
+MAX_FILTER_NUM_PROC = 8  # 최대 필터링 프로세스
 
 # Performance settings
-ESTIMATED_TOKENIZATION_SPEED = 5000  # samples/sec (Rust Fast Tokenizer 단일 프로세스)
+ESTIMATED_TOKENIZATION_SPEED = 10000  # samples/sec (멀티프로세스)
 WARMUP_TEXT_PATTERN = "Hello world " * 100
 WARMUP_TEXT_COUNT = 10
 
@@ -309,29 +309,31 @@ def log_with_rank(msg: str, rank: int = None, is_main: bool = None):
 
 def calculate_optimal_num_proc(total_samples: int, cpu_count: int, available_memory: int = None) -> int:
     """
-    최적 프로세스 수 계산 (항상 1 반환)
+    최적 프로세스 수 계산
 
-    Rust Fast Tokenizer는 단일 프로세스에서 내부 멀티스레딩을 사용하는 것이 가장 빠름.
-    datasets.map(num_proc > 1)을 사용하면:
-    1. 프로세스 fork 발생
-    2. datasets 라이브러리가 TOKENIZERS_PARALLELISM=false로 강제 설정
-    3. Rust 내부 병렬 처리 비활성화
-    4. 멀티프로세싱 오버헤드 추가
-
-    따라서 항상 num_proc=1로 고정하여:
-    - TOKENIZERS_PARALLELISM=true 유지
-    - Rust Fast Tokenizer 내부 병렬 처리 활성화
-    - 초기화 오버헤드 제거
+    데이터셋 크기에 따라 적절한 num_proc 결정:
+    - 작은 데이터셋: 오버헤드 최소화
+    - 큰 데이터셋: 병렬 처리로 속도 향상
 
     Args:
-        total_samples: 총 샘플 수 (사용 안됨)
-        cpu_count: CPU 코어 수 (사용 안됨)
-        available_memory: 사용 가능한 메모리 (사용 안됨)
+        total_samples: 총 샘플 수
+        cpu_count: CPU 코어 수
+        available_memory: 사용 가능한 메모리 (선택적)
 
     Returns:
-        항상 1
+        최적 프로세스 수 (1 ~ DEFAULT_NUM_PROC)
     """
-    return 1
+    # 작은 데이터셋: 단일 프로세스
+    if total_samples < 10000:
+        return 1
+
+    # 중간 데이터셋: CPU의 절반
+    elif total_samples < 100000:
+        return min(4, cpu_count // 2)
+
+    # 큰 데이터셋: 최대 병렬 처리
+    else:
+        return min(DEFAULT_NUM_PROC, cpu_count)
 
 
 def get_tokenization_env_config() -> Dict[str, int]:
