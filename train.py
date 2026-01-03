@@ -562,169 +562,6 @@ def concatenate_sequences(
 # Optimized Tokenization Function
 # ============================================================================
 
-def tokenize_all_datasets(
-    all_sources: list,
-    tokenizer,
-    args,
-) -> list:
-    """
-    모든 데이터셋을 토크나이징하고 캐시에 저장
-
-    Args:
-        all_sources: [(source_type, source_name), ...] 리스트
-        tokenizer: 토크나이저
-        args: 학습 인자
-
-    Returns:
-        [{'name': str, 'cache_path': Path, 'num_samples': int}, ...]
-    """
-    import gc
-    from datasets import Dataset as HFDataset
-
-    rank = int(os.environ.get("RANK", 0))
-    is_main_process = rank == 0
-
-    tokenized_datasets_info = []
-    cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-
-    if is_main_process:
-        logger.info("="*80)
-        logger.info("⚡ Pre-tokenizing all datasets (Rank 0 only)")
-        logger.info("="*80)
-
-        for idx, (src_type, src_name) in enumerate(all_sources):
-            logger.info(f"")
-            logger.info(f"📦 [{idx+1}/{len(all_sources)}] Dataset: {src_name}")
-
-            # 데이터셋 로드
-            logger.info(f"  Loading dataset...")
-            if src_type == "hf":
-                dataset, text_column = load_pretrain_dataset(
-                    dataset_names=[src_name],
-                    dataset_config=args.dataset_config if idx == 0 else None,
-                    train_files=None,
-                    text_column=args.text_column,
-                )
-            else:
-                dataset, text_column = load_pretrain_dataset(
-                    dataset_names=None,
-                    dataset_config=None,
-                    train_files=[src_name],
-                    text_column=args.text_column,
-                )
-
-            # 캐시 경로 설정 (토크나이저 버전 포함)
-            cache_version = get_cache_version_key(
-                tokenizer,
-                additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
-            )
-            dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
-            tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
-            tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
-
-            if tokenized_cache_path.exists() and tokenized_marker.exists():
-                logger.info(f"  ✅ Loading cached tokenized dataset")
-                tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-                logger.info(f"  ✅ Loaded {len(tokenized_dataset):,} samples")
-            else:
-                logger.info(f"  🔤 Tokenizing dataset...")
-
-                tokenized_ds = tokenize_dataset(
-                    dataset=dataset["train"],
-                    tokenizer=tokenizer,
-                    text_column=text_column,
-                    max_seq_length=args.max_seq_length,
-                    packing=args.packing,
-                )
-
-                if args.packing:
-                    logger.info(f"  📦 Packing sequences...")
-                    tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
-                    del tokenized_ds
-                    gc.collect()
-
-                    concatenated_chunks = concatenate_sequences(
-                        tokenized_sequences=tokenized_list,
-                        max_seq_length=args.max_seq_length,
-                        eos_token_id=tokenizer.eos_token_id,
-                    )
-                    del tokenized_list
-                    gc.collect()
-
-                    tokenized_dataset = HFDataset.from_list(concatenated_chunks)
-                    del concatenated_chunks
-                    gc.collect()
-                else:
-                    tokenized_dataset = tokenized_ds
-
-                logger.info(f"  💾 Saving tokenized dataset...")
-                num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
-                tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
-                tokenized_marker.touch()
-                logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples (shards={num_shards})")
-
-            tokenized_datasets_info.append({
-                'name': src_name,
-                'cache_path': tokenized_cache_path,
-                'num_samples': len(tokenized_dataset),
-            })
-
-            del dataset
-            del tokenized_dataset
-            gc.collect()
-
-        logger.info("="*80)
-        logger.info("✅ All datasets pre-tokenized!")
-        logger.info("="*80)
-    else:
-        # 다른 Rank들은 마지막 마커 대기
-        logger.info(f"[Rank {rank}] Waiting for rank 0 to complete tokenization...")
-
-        import time as time_module
-        last_src_name = all_sources[-1][1]
-        last_idx = len(all_sources) - 1
-        cache_version = get_cache_version_key(
-            tokenizer,
-            additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{last_idx}"
-        )
-        dataset_hash = hashlib.md5(f"{last_src_name}_{cache_version}".encode()).hexdigest()[:16]
-        last_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
-
-        max_wait = 7200
-        waited = 0
-        while not last_marker.exists() and waited < max_wait:
-            time_module.sleep(10)
-            waited += 10
-            if waited % 60 == 0:
-                logger.info(f"[Rank {rank}] Still waiting... ({waited}s)")
-
-        if not last_marker.exists():
-            raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {max_wait}s")
-
-        logger.info(f"[Rank {rank}] ✅ Loading tokenized datasets info...")
-
-        for idx, (src_type, src_name) in enumerate(all_sources):
-            cache_version = get_cache_version_key(
-                tokenizer,
-                additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
-            )
-            dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
-            tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
-
-            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-            tokenized_datasets_info.append({
-                'name': src_name,
-                'cache_path': tokenized_cache_path,
-                'num_samples': len(tokenized_dataset),
-            })
-            del tokenized_dataset
-            gc.collect()
-
-        logger.info(f"[Rank {rank}] ✅ All dataset info loaded!")
-
-    return tokenized_datasets_info
-
-
 def tokenize_dataset(
     dataset,
     tokenizer,
@@ -842,144 +679,6 @@ def tokenize_dataset(
     logger.info(f"   Output: {len(tokenized):,} samples")
 
     return tokenized
-
-
-def tokenize_non_sequential_dataset(tokenizer, args):
-    """
-    Non-sequential 모드: 단일/병합 데이터셋 로드 및 토크나이징
-
-    Args:
-        tokenizer: 토크나이저
-        args: 학습 인자
-
-    Returns:
-        dict: {'cache_path': Path, 'num_samples': int}
-    """
-    import gc
-    from datasets import Dataset as HFDataset
-
-    ddp_info = get_ddp_info()
-    rank = ddp_info['rank']
-    is_main_process = ddp_info['is_main_process']
-
-    # ----------------------------------------------------------------
-    # 1. 데이터셋 로드
-    # ----------------------------------------------------------------
-    log_with_rank("📚 Loading datasets...", rank, is_main_process)
-    load_start = time.time()
-
-    if args.mode == "pretrain":
-        if is_main_process:
-            logger.info(f"[Rank 0] Loading {len(args.dataset) if args.dataset else 0} datasets...")
-        dataset, text_column = load_pretrain_dataset(
-            dataset_names=args.dataset,
-            dataset_config=args.dataset_config,
-            train_files=args.train_file,
-            text_column=args.text_column,
-        )
-    else:  # sft
-        dataset, text_column = load_sft_dataset(
-            dataset_names=args.dataset,
-            train_files=args.train_file,
-        )
-
-    load_time = time.time() - load_start
-    log_with_rank(f"✅ Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples", rank, is_main_process)
-
-    # ----------------------------------------------------------------
-    # 2. 토크나이징 캐시 경로 설정 (토크나이저 버전 포함)
-    # ----------------------------------------------------------------
-    dataset_names_str = "_".join(args.dataset) if args.dataset else "local"
-
-    # 토크나이저 버전을 포함한 캐시 키 생성
-    cache_version = get_cache_version_key(
-        tokenizer,
-        additional_info=f"packing_{getattr(args, 'packing', False)}_maxlen_{args.max_seq_length}"
-    )
-    dataset_cache_key = f"{dataset_names_str}_{cache_version}"
-
-    tokenized_cache_path = create_cache_path(dataset_cache_key, "_tokenized")
-    tokenized_marker = Path(str(tokenized_cache_path).replace("_tokenized", ".tokenized.marker"))
-
-    # ----------------------------------------------------------------
-    # 3. 토크나이징 수행 (Rank 0만) 또는 캐시에서 로드
-    # ----------------------------------------------------------------
-    if is_main_process:
-        logger.info("🔤 [Rank 0] Tokenizing dataset...")
-
-        # 토크나이저 워밍업
-        logger.info("🔥 Warming up tokenizer...")
-        warmup_texts = [WARMUP_TEXT_PATTERN] * WARMUP_TEXT_COUNT
-        _ = tokenizer(warmup_texts, truncation=False, padding=False)
-        logger.info("✅ Tokenizer warmed up")
-
-    # 캐시 확인 및 로드
-    if tokenized_cache_path.exists() and tokenized_marker.exists():
-        log_with_rank(f"✅ Loading cached tokenized dataset from: {tokenized_cache_path}", rank, is_main_process)
-        tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-        log_with_rank(f"✅ Loaded {len(tokenized_dataset):,} samples from cache", rank, is_main_process)
-    elif is_main_process:
-        # Rank 0만 토크나이징 수행
-        tokenized_ds = tokenize_dataset(
-            dataset=dataset["train"],
-            tokenizer=tokenizer,
-            text_column=text_column,
-            max_seq_length=args.max_seq_length,
-            packing=args.packing,
-        )
-
-        if args.packing:
-            # Packing: concatenate sequences
-            logger.info("📦 Packing sequences...")
-            tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
-            del tokenized_ds
-            gc.collect()
-
-            concatenated_chunks = concatenate_sequences(
-                tokenized_sequences=tokenized_list,
-                max_seq_length=args.max_seq_length,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-            del tokenized_list
-            gc.collect()
-
-            tokenized_dataset = HFDataset.from_list(concatenated_chunks)
-            del concatenated_chunks
-            gc.collect()
-        else:
-            tokenized_dataset = tokenized_ds
-
-        # 캐시 저장 (rank 0만)
-        logger.info(f"💾 [Rank 0] Saving tokenized dataset to: {tokenized_cache_path}")
-        num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
-        tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
-        tokenized_marker.touch()
-        logger.info(f"✅ [Rank 0] Tokenized and saved: {len(tokenized_dataset):,} samples (shards={num_shards})")
-    else:
-        # 다른 rank들은 마커 대기 후 로드
-        if not wait_for_marker(tokenized_marker, TOKENIZATION_TIMEOUT, CHECK_INTERVAL, rank):
-            raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {TOKENIZATION_TIMEOUT}s")
-
-        logger.info(f"📥 [Rank {rank}] Loading tokenized dataset from: {tokenized_cache_path}")
-        tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-        logger.info(f"✅ [Rank {rank}] Loaded {len(tokenized_dataset):,} samples")
-
-    # 메모리 정리
-    num_samples = len(tokenized_dataset)
-    del dataset
-    del tokenized_dataset  # 메모리 해제 - 나중에 모든 rank가 함께 로드
-    gc.collect()
-
-    if is_main_process:
-        logger.info(f"✅ Tokenization complete: {num_samples:,} samples ready")
-    else:
-        logger.info(f"✅ [Rank {rank}] Tokenization ready: {num_samples:,} samples")
-
-    # Sequential mode와 동일한 형식으로 반환
-    return {
-        'cache_path': tokenized_cache_path,
-        'num_samples': num_samples,
-    }
 
 
 # ============================================================================
@@ -1551,294 +1250,320 @@ def setup_model_and_tokenizer(
 # ============================================================================
 
 # ============================================================================
-# Main Train Function
+# Data Source Preparation
 # ============================================================================
-def train(args):
-    """메인 학습 함수"""
-    # DDP 환경 확인
-    ddp_info = get_ddp_info()
-    rank = ddp_info['rank']
-    world_size = ddp_info['world_size']
-    is_distributed = ddp_info['is_distributed']
-    is_main_process = ddp_info['is_main_process']
+def prepare_data_sources(args) -> list:
+    """
+    args에서 모든 데이터 소스를 추출하여 리스트로 반환
 
-    logger.info("="*80)
-    logger.info(f"🚀 Starting {args.mode.upper()} training")
-    logger.info(f"🌐 Environment: {world_size} GPU(s), Rank {rank}")
-    logger.info("="*80)
+    Args:
+        args: 학습 인자
 
-    # ============================================================================
-    # STEP 0: 토크나이저 로드 (DDP 전!)
-    # ============================================================================
-    if is_main_process:
-        logger.info("📝 Loading tokenizer...")
+    Returns:
+        [("hf", "dataset_name"), ("file", "path.jsonl"), ...]
+    """
+    all_sources = []
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path,
-        use_fast=True,
-    )
-
-    # Fast Tokenizer 강제 체크
-    if not tokenizer.is_fast:
-        raise ValueError(
-            f"❌ Fast Tokenizer not available! "
-            f"Current tokenizer: {type(tokenizer).__name__}\n"
-            f"Please ensure you're using a tokenizer that supports Fast mode (Rust-based)."
-        )
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    if is_main_process:
-        logger.info("✅ Using Fast Tokenizer (Rust-based)")
-        logger.info(f"   Tokenizer type: {type(tokenizer).__name__}")
-
-        # Warmup: Rust 토크나이저 초기화 (첫 호출이 느릴 수 있음)
-        logger.info("   Warming up tokenizer...")
-        warmup_start = time.time()
-        for _ in range(WARMUP_TEXT_COUNT):
-            _ = tokenizer(WARMUP_TEXT_PATTERN, truncation=False, padding=False)
-        warmup_time = time.time() - warmup_start
-        logger.info(f"   Warmup completed in {warmup_time:.2f}s")
-
-    # ============================================================================
-    # STEP 1: 데이터 로드 및 토크나이징 (Sequential/Non-sequential 통합)
-    # ============================================================================
-    # Sequential 또는 Non-sequential 모드 결정
-    is_sequential = args.sequential and args.dataset and len(args.dataset) > 1
-
-    if is_sequential:
-        if is_main_process:
-            logger.info("📦 Sequential mode: Processing datasets one by one")
-
-        # 데이터 소스 리스트 준비
-        dataset_names = args.dataset if args.dataset else []
-        train_files = args.train_file if args.train_file else []
-
-        all_sources = []
-        for ds in dataset_names:
+    if args.dataset:
+        for ds in args.dataset:
             all_sources.append(("hf", ds))
-        for f in train_files:
+
+    if args.train_file:
+        for f in args.train_file:
             all_sources.append(("file", f))
 
-        if is_main_process:
-            logger.info(f"📋 Datasets to process: {len(all_sources)}")
-            for i, (src_type, src_name) in enumerate(all_sources):
-                logger.info(f"  {i+1}. [{src_type}] {src_name}")
+    return all_sources
 
-        # 토크나이징 (Rank 0만 실행, 다른 rank는 함수 내부에서 대기)
-        tokenized_datasets_info = tokenize_all_datasets(all_sources, tokenizer, args)
-    else:
-        if is_main_process:
-            logger.info("📦 Single dataset mode")
 
-        # Non-sequential 토크나이징
-        cache_info = tokenize_non_sequential_dataset(tokenizer, args)
+def tokenize_single_source(
+    source: tuple,
+    tokenizer,
+    args,
+    idx: int,
+) -> dict:
+    """
+    단일 데이터 소스 토크나이징 (Rank 0만 실행)
 
-        # Sequential과 동일한 형식으로 변환 (리스트 형태)
-        tokenized_datasets_info = [{
-            'name': 'merged_dataset',
-            'cache_path': cache_info['cache_path'],
-            'num_samples': cache_info['num_samples'],
-        }]
+    Args:
+        source: ("hf", "dataset_name") 또는 ("file", "path")
+        tokenizer: 토크나이저
+        args: 학습 인자
+        idx: 소스 인덱스 (캐시 키 생성용)
 
-    # DDP Barrier (모든 rank 동기화)
+    Returns:
+        {'name': str, 'cache_path': Path, 'num_samples': int}
+    """
+    import gc
+    from datasets import Dataset as HFDataset
+
+    ddp_info = get_ddp_info()
+    rank = ddp_info['rank']
+    is_main_process = ddp_info['is_main_process']
+
+    src_type, src_name = source
+    cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+
+    # 캐시 경로 설정 (모든 rank에서 동일하게 계산)
+    cache_version = get_cache_version_key(
+        tokenizer,
+        additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
+    )
+    dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
+    tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+    tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+
     if is_main_process:
-        logger.info("⏳ Synchronizing all ranks after tokenization...")
-    ddp_barrier()
-    if is_main_process:
-        logger.info("✅ All ranks synchronized!")
+        logger.info(f"📦 [{idx+1}] Dataset: {src_name}")
 
-    # Tokenize-only 모드
-    if hasattr(args, '_tokenize_only') and args._tokenize_only:
-        if is_main_process:
-            logger.info("="*80)
-            logger.info("✅ Tokenization completed! (tokenize-only mode)")
-            logger.info("="*80)
-        return
-    
-    # ============================================================================
-    # STEP 2: W&B 초기화 (선택적)
-    # ============================================================================
-    if args.use_wandb:
-        try:
-            import wandb
-            if is_main_process:
-                wandb.init(
-                    project=args.wandb_project,
-                    name=args.wandb_run_name,
-                    config=vars(args),
+        # 캐시 확인
+        if tokenized_cache_path.exists() and tokenized_marker.exists():
+            logger.info(f"  ✅ Loading cached tokenized dataset")
+            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+            num_samples = len(tokenized_dataset)
+            logger.info(f"  ✅ Loaded {num_samples:,} samples from cache")
+        else:
+            # 데이터셋 로드
+            logger.info(f"  📚 Loading dataset...")
+            if src_type == "hf":
+                dataset, text_column = load_pretrain_dataset(
+                    dataset_names=[src_name],
+                    dataset_config=args.dataset_config if idx == 0 else None,
+                    train_files=None,
+                    text_column=args.text_column,
                 )
-                logger.info(f"📊 W&B initialized: {args.wandb_project}")
-        except ImportError:
-            logger.warning("⚠️ wandb not installed")
-            args.use_wandb = False
+            else:
+                dataset, text_column = load_pretrain_dataset(
+                    dataset_names=None,
+                    dataset_config=None,
+                    train_files=[src_name],
+                    text_column=args.text_column,
+                )
 
-    # ============================================================================
-    # STEP 3: 학습 루프 (Sequential/Non-sequential 통합)
-    # ============================================================================
+            # 토크나이징
+            logger.info(f"  🔤 Tokenizing dataset...")
+            tokenized_ds = tokenize_dataset(
+                dataset=dataset["train"],
+                tokenizer=tokenizer,
+                text_column=text_column,
+                max_seq_length=args.max_seq_length,
+                packing=args.packing,
+            )
+
+            # Packing (선택적)
+            if args.packing:
+                logger.info(f"  📦 Packing sequences...")
+                tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+                del tokenized_ds
+                gc.collect()
+
+                concatenated_chunks = concatenate_sequences(
+                    tokenized_sequences=tokenized_list,
+                    max_seq_length=args.max_seq_length,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+                del tokenized_list
+                gc.collect()
+
+                tokenized_dataset = HFDataset.from_list(concatenated_chunks)
+                del concatenated_chunks
+                gc.collect()
+            else:
+                tokenized_dataset = tokenized_ds
+
+            # 저장
+            logger.info(f"  💾 Saving tokenized dataset...")
+            num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
+            tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
+            tokenized_marker.touch()
+            num_samples = len(tokenized_dataset)
+            logger.info(f"  ✅ Tokenized: {num_samples:,} samples (shards={num_shards})")
+
+            # 메모리 해제
+            del dataset
+            del tokenized_dataset
+            gc.collect()
+
+        return {
+            'name': src_name,
+            'cache_path': tokenized_cache_path,
+            'num_samples': num_samples,
+        }
+    else:
+        # 다른 rank는 cache_path만 반환 (barrier 후 로드 예정)
+        return {
+            'name': src_name,
+            'cache_path': tokenized_cache_path,
+            'num_samples': 0,  # barrier 후 로드시 알게됨
+        }
+
+
+# ============================================================================
+# Train Function (단일 데이터셋 학습)
+# ============================================================================
+def train_single_dataset(
+    args,
+    dataset_info: dict,
+    tokenizer,
+    pretrained_model_path: str = None,
+    is_first_stage: bool = True,
+    stage_name: str = None,
+):
+    """
+    단일 데이터셋에 대한 학습 수행
+
+    Args:
+        args: 학습 인자
+        dataset_info: {'name': str, 'cache_path': Path, 'num_samples': int}
+        tokenizer: 토크나이저
+        pretrained_model_path: 사전학습 모델 경로 (Sequential mode에서 이전 stage 체크포인트)
+        is_first_stage: 첫 번째 stage인지 여부 (warmup_steps 결정)
+        stage_name: Stage 이름 (로깅용)
+
+    Returns:
+        checkpoint_path: 저장된 체크포인트 경로
+    """
     from datasets import Dataset as HFDataset
     import gc
 
+    ddp_info = get_ddp_info()
+    is_main_process = ddp_info['is_main_process']
+
     if is_main_process:
         logger.info("="*80)
-        logger.info("🎯 Starting Training")
-        logger.info(f"   Datasets: {len(tokenized_datasets_info)}")
+        if stage_name:
+            logger.info(f"🚀 Training: {stage_name}")
+        else:
+            logger.info(f"🚀 Training: {dataset_info['name']}")
+        logger.info(f"   Samples: {dataset_info['num_samples']:,}")
         logger.info("="*80)
 
-    # Data Collator (공통)
+    # ============================================================================
+    # 1. 모델 로드
+    # ============================================================================
+    if is_main_process:
+        logger.info(f"⏳ Loading model from: {pretrained_model_path or 'scratch'}")
+
+    model, _ = setup_model_and_tokenizer(
+        tokenizer_path=args.tokenizer_path,
+        model_config=args.model_config,
+        pretrained_model=pretrained_model_path,
+        use_flash_attention=args.flash_attention,
+        use_compile=args.compile,
+        use_bf16=args.bf16,
+        use_fp16=args.fp16,
+    )
+    if is_main_process:
+        logger.info(f"✓ Model loaded")
+
+    # ============================================================================
+    # 2. 토크나이징된 데이터셋 로드 (모든 rank)
+    # ============================================================================
+    if is_main_process:
+        logger.info(f"📥 Loading tokenized dataset from cache...")
+
+    tokenized_dataset = HFDataset.load_from_disk(str(dataset_info['cache_path']))
+
+    if is_main_process:
+        logger.info(f"✓ Loaded {len(tokenized_dataset):,} samples")
+
+    # ============================================================================
+    # 3. Data Collator
+    # ============================================================================
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=False,
     )
 
-    # Sequential: 각 데이터셋마다 체크포인트 업데이트
-    # Non-sequential: 단일 학습
-    current_checkpoint = args.pretrained_model
+    # ============================================================================
+    # 4. Training Arguments
+    # ============================================================================
+    output_dir = args.output_dir if stage_name is None else f"{args.output_dir}/{stage_name}"
+    optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
 
-    for idx, dataset_info in enumerate(tokenized_datasets_info):
-        if is_main_process:
-            logger.info("")
-            logger.info("="*80)
-            if is_sequential:
-                logger.info(f"🚀 Training [{idx+1}/{len(tokenized_datasets_info)}]: {dataset_info['name']}")
-            else:
-                logger.info(f"🚀 Training: {dataset_info['name']}")
-            logger.info(f"   Samples: {dataset_info['num_samples']:,}")
-            logger.info("="*80)
-
-        # 모델 로드
-        if is_main_process:
-            if idx == 0:
-                logger.info(f"⏳ Loading model from: {current_checkpoint or 'scratch'}")
-            else:
-                logger.info(f"⏳ Resuming from: {current_checkpoint}")
-
-        model, _ = setup_model_and_tokenizer(
-            tokenizer_path=args.tokenizer_path,
-            model_config=args.model_config,
-            pretrained_model=current_checkpoint,
-            use_flash_attention=args.flash_attention,
-            use_compile=args.compile,
-            use_bf16=args.bf16,
-            use_fp16=args.fp16,
-        )
-        if is_main_process:
-            logger.info(f"✓ Model loaded")
-
-        # 토크나이징된 데이터셋 로드 (모든 rank)
-        if is_main_process:
-            logger.info(f"📥 Loading tokenized dataset from cache...")
-
-        tokenized_dataset = HFDataset.load_from_disk(str(dataset_info['cache_path']))
-
-        if is_main_process:
-            logger.info(f"✓ Loaded {len(tokenized_dataset):,} samples")
-
-        # Training Arguments
-        if is_sequential:
-            stage_output_dir = f"{args.output_dir}/stage_{idx+1}"
-        else:
-            stage_output_dir = args.output_dir
-
-        optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
-
-        training_args = TrainingArguments(
-            output_dir=stage_output_dir,
-            num_train_epochs=args.num_epochs,
-            per_device_train_batch_size=args.batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            warmup_steps=WARMUP_STEPS_FIRST_STAGE if idx == 0 else WARMUP_STEPS_RESUME,
-            logging_steps=args.logging_steps,
-            save_steps=args.save_steps,
-            save_total_limit=2,
-            bf16=args.bf16,
-            fp16=args.fp16,
-            gradient_checkpointing=args.gradient_checkpointing,
-            dataloader_num_workers=args.dataloader_num_workers,
-            remove_unused_columns=False,
-            report_to=["wandb"] if args.use_wandb else ["tensorboard"],
-            max_steps=args.max_steps if args.max_steps > 0 else -1,
-            save_safetensors=True,
-            # I/O 최적화
-            dataloader_pin_memory=True,
-            dataloader_prefetch_factor=optimal_prefetch,
-            dataloader_persistent_workers=True,
-            dataloader_drop_last=True,
-            # 옵티마이저 및 정밀도
-            optim="adamw_torch_fused",
-            ddp_find_unused_parameters=False,
-            tf32=True,
-            # 배치 최적화
-            group_by_length=not getattr(args, 'packing', False),
-            max_grad_norm=1.0,
-            gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_dataset,
-            data_collator=data_collator,
-        )
-
-        if is_main_process:
-            logger.info(f"🏃 Starting training...")
-        trainer.train()
-
-        # 체크포인트 저장
-        checkpoint_path = f"{stage_output_dir}/checkpoint"
-        trainer.save_model(checkpoint_path)
-
-        # DDP barrier
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-
-        # dtype 유지하며 저장 (rank 0만)
-        if is_main_process:
-            model_dtype = next(model.parameters()).dtype
-            if model_dtype in (torch.bfloat16, torch.float16):
-                logger.info(f"💾 Re-saving model in {model_dtype} format...")
-                model.save_pretrained(checkpoint_path, torch_dtype=model_dtype, safe_serialization=True)
-
-            if is_sequential:
-                logger.info(f"✅ Stage {idx+1} completed: {checkpoint_path}")
-            else:
-                logger.info(f"✅ Training completed: {checkpoint_path}")
-
-        # 다음 라운드를 위해 체크포인트 경로 업데이트 (Sequential mode)
-        if is_sequential:
-            current_checkpoint = checkpoint_path
-
-        # 메모리 해제
-        del model
-        del tokenized_dataset
-        del trainer
-        gc.collect()
-
-        try:
-            torch.cuda.empty_cache()
-        except:
-            pass
-
-        # DDP barrier
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=args.num_epochs,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        warmup_steps=WARMUP_STEPS_FIRST_STAGE if is_first_stage else WARMUP_STEPS_RESUME,
+        logging_steps=args.logging_steps,
+        save_steps=args.save_steps,
+        save_total_limit=2,
+        bf16=args.bf16,
+        fp16=args.fp16,
+        gradient_checkpointing=args.gradient_checkpointing,
+        dataloader_num_workers=args.dataloader_num_workers,
+        remove_unused_columns=False,
+        report_to=["wandb"] if args.use_wandb else ["tensorboard"],
+        max_steps=args.max_steps if args.max_steps > 0 else -1,
+        save_safetensors=True,
+        # I/O 최적화
+        dataloader_pin_memory=True,
+        dataloader_prefetch_factor=optimal_prefetch,
+        dataloader_persistent_workers=True,
+        dataloader_drop_last=True,
+        # 옵티마이저 및 정밀도
+        optim="adamw_torch_fused",
+        ddp_find_unused_parameters=False,
+        tf32=True,
+        # 배치 최적화
+        group_by_length=not getattr(args, 'packing', False),
+        max_grad_norm=1.0,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
+    )
 
     # ============================================================================
-    # STEP 4: 최종 완료 메시지
+    # 5. Trainer 생성 및 학습
     # ============================================================================
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_dataset,
+        data_collator=data_collator,
+    )
+
     if is_main_process:
-        logger.info("="*80)
-        logger.info("🎉 Training completed!")
-        if is_sequential:
-            logger.info(f"📁 Final model: {current_checkpoint}")
-            logger.info(f"📊 Trained on {len(tokenized_datasets_info)} datasets sequentially")
-        else:
-            logger.info(f"📁 Final model: {checkpoint_path}")
-        logger.info("="*80)
+        logger.info(f"🏃 Starting training...")
+    trainer.train()
+
+    # ============================================================================
+    # 6. 체크포인트 저장
+    # ============================================================================
+    checkpoint_path = f"{output_dir}/checkpoint"
+    trainer.save_model(checkpoint_path)
+
+    # DDP barrier
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+    # dtype 유지하며 저장 (rank 0만)
+    if is_main_process:
+        model_dtype = next(model.parameters()).dtype
+        if model_dtype in (torch.bfloat16, torch.float16):
+            logger.info(f"💾 Re-saving model in {model_dtype} format...")
+            model.save_pretrained(checkpoint_path, torch_dtype=model_dtype, safe_serialization=True)
+        logger.info(f"✅ Training completed: {checkpoint_path}")
+
+    # ============================================================================
+    # 7. 메모리 해제
+    # ============================================================================
+    del model
+    del tokenized_dataset
+    del trainer
+    gc.collect()
+
+    try:
+        torch.cuda.empty_cache()
+    except:
+        pass
+
+    # DDP barrier
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+    return checkpoint_path
 
 
 # ============================================================================
@@ -1964,46 +1689,152 @@ def main():
     if not args.dataset and not args.train_file:
         parser.error("Either --dataset or --train_file must be provided")
 
-    # Tokenize only 모드: DDP 없이 토큰화만 수행
+    # DDP 환경 정보
+    ddp_info = get_ddp_info()
+    rank = ddp_info['rank']
+    world_size = ddp_info['world_size']
+    is_main_process = ddp_info['is_main_process']
+
+    if is_main_process:
+        logger.info("="*80)
+        logger.info(f"🚀 Starting {args.mode.upper()} training")
+        logger.info(f"🌐 Environment: {world_size} GPU(s), Rank {rank}")
+        logger.info("="*80)
+
+    # ============================================================================
+    # STEP 1: 토크나이저 로드
+    # ============================================================================
+    if is_main_process:
+        logger.info("📝 Loading tokenizer...")
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path,
+        use_fast=True,
+    )
+
+    # Fast Tokenizer 강제 체크
+    if not tokenizer.is_fast:
+        raise ValueError(
+            f"❌ Fast Tokenizer not available! "
+            f"Current tokenizer: {type(tokenizer).__name__}\n"
+            f"Please ensure you're using a tokenizer that supports Fast mode (Rust-based)."
+        )
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    if is_main_process:
+        logger.info("✅ Using Fast Tokenizer (Rust-based)")
+        logger.info(f"   Tokenizer type: {type(tokenizer).__name__}")
+
+        # Warmup: Rust 토크나이저 초기화
+        logger.info("   Warming up tokenizer...")
+        warmup_start = time.time()
+        for _ in range(WARMUP_TEXT_COUNT):
+            _ = tokenizer(WARMUP_TEXT_PATTERN, truncation=False, padding=False)
+        warmup_time = time.time() - warmup_start
+        logger.info(f"   Warmup completed in {warmup_time:.2f}s")
+
+    # ============================================================================
+    # STEP 2: 데이터 소스 준비
+    # ============================================================================
+    all_sources = prepare_data_sources(args)
+
+    if is_main_process:
+        logger.info(f"📋 Total datasets: {len(all_sources)}")
+        for i, (src_type, src_name) in enumerate(all_sources):
+            logger.info(f"  {i+1}. [{src_type}] {src_name}")
+
+    # Tokenize-only 모드 체크 (early return)
     if args.tokenize_only:
-        print("="*80)
-        print("🔥 Tokenize-Only Mode: Pre-tokenizing datasets (no DDP)")
-        print("="*80)
-        
-        # Sequential이 필요
-        if not args.sequential:
-            args.sequential = True
-            print("⚡ Automatically enabling --sequential mode for tokenization")
-        
-        # 핵심: 단일 프로세스로 Fast Tokenizer 사용
-        # num_proc=1 → datasets가 TOKENIZERS_PARALLELISM=false 설정 안함
-        # 데이터 변환은 병렬로, 토크나이징은 batch iterator로
-        num_proc = os.getenv("DATASET_NUM_PROC", str(min(48, os.cpu_count() or 8)))
-        os.environ["DATASET_NUM_PROC"] = num_proc
-        print(f"⚡ DATASET_NUM_PROC={num_proc} for data conversion")
-        
-        # train 호출 (토큰화 부분만 실행됨)
-        print("🚀 Calling train for tokenization...")
+        if is_main_process:
+            logger.info("="*80)
+            logger.info("🔥 Tokenize-Only Mode")
+            logger.info("="*80)
 
-        # DDP 환경 변수 제거 (단일 프로세스로 실행)
-        os.environ.pop("RANK", None)
-        os.environ.pop("WORLD_SIZE", None)
-        os.environ.pop("LOCAL_RANK", None)
-        os.environ.pop("MASTER_ADDR", None)
-        os.environ.pop("MASTER_PORT", None)
+        # 모든 소스 토크나이징
+        for idx, source in enumerate(all_sources):
+            dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+            ddp_barrier()
 
-        # tokenization만 수행하고 training은 스킵하도록 플래그 설정
-        args._tokenize_only = True
-
-        train(args)
-        
-        print("="*80)
-        print("✅ Tokenization completed! Now run torchrun for training.")
-        print("="*80)
+        if is_main_process:
+            logger.info("="*80)
+            logger.info("✅ All datasets tokenized!")
+            logger.info("="*80)
         return
 
-    # 학습 시작
-    train(args)
+    # ============================================================================
+    # STEP 3: W&B 초기화 (선택적)
+    # ============================================================================
+    if args.use_wandb:
+        try:
+            import wandb
+            if is_main_process:
+                wandb.init(
+                    project=args.wandb_project,
+                    name=args.wandb_run_name,
+                    config=vars(args),
+                )
+                logger.info(f"📊 W&B initialized: {args.wandb_project}")
+        except ImportError:
+            logger.warning("⚠️ wandb not installed")
+            args.use_wandb = False
+
+    # ============================================================================
+    # STEP 4: 각 소스마다 토크나이징 → 학습 반복
+    # ============================================================================
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("🎯 Starting Training Pipeline")
+        logger.info(f"   Total stages: {len(all_sources)}")
+        logger.info("="*80)
+
+    current_checkpoint = args.pretrained_model
+
+    for idx, source in enumerate(all_sources):
+        if is_main_process:
+            logger.info("")
+            logger.info("="*80)
+            logger.info(f"📊 Stage {idx+1}/{len(all_sources)}: {source[1]}")
+            logger.info("="*80)
+
+        # 1. 토크나이징 (Rank 0만 실행)
+        if is_main_process:
+            logger.info("🔤 Step 1: Tokenizing...")
+        dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+
+        # 2. Barrier (모든 rank 동기화)
+        if is_main_process:
+            logger.info("⏳ Step 2: Synchronizing all ranks...")
+        ddp_barrier()
+        if is_main_process:
+            logger.info("✅ All ranks synchronized!")
+
+        # 3. 학습 (모든 rank)
+        if is_main_process:
+            logger.info("🏋️ Step 3: Training...")
+        checkpoint_path = train_single_dataset(
+            args=args,
+            dataset_info=dataset_info,
+            tokenizer=tokenizer,
+            pretrained_model_path=current_checkpoint,
+            is_first_stage=(idx == 0),
+            stage_name=f"stage_{idx+1}",
+        )
+
+        # 다음 stage를 위해 체크포인트 업데이트
+        current_checkpoint = checkpoint_path
+
+    # ============================================================================
+    # STEP 5: 최종 완료
+    # ============================================================================
+    if is_main_process:
+        logger.info("")
+        logger.info("="*80)
+        logger.info("🎉 All training completed!")
+        logger.info(f"📁 Final model: {current_checkpoint}")
+        logger.info(f"📊 Trained on {len(all_sources)} datasets")
+        logger.info("="*80)
 
 
 if __name__ == "__main__":
