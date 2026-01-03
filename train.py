@@ -618,6 +618,12 @@ def tokenize_dataset(
         batch_dataset = dataset.select(range(i, end_idx))
         batch_texts = batch_dataset[text_column]
 
+        # Arrow 배열을 Python list로 변환
+        if hasattr(batch_texts, 'to_pylist'):
+            batch_texts = batch_texts.to_pylist()
+        elif not isinstance(batch_texts, list):
+            batch_texts = list(batch_texts)
+
         # Rust tokenizer가 내부적으로 병렬 처리
         encoded = tokenizer(
             batch_texts,
