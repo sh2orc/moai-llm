@@ -566,6 +566,40 @@ def concatenate_sequences(
 # Optimized Tokenization Function
 # ============================================================================
 
+def _tokenize_chunk(args_tuple):
+    """
+    Worker 함수: 데이터 청크를 토크나이징 (멀티프로세싱용)
+
+    각 워커 프로세스가 독립적으로 tokenizer를 로드하고 자신의 청크를 처리
+    """
+    chunk_data, tokenizer_path, text_column, max_seq_length, packing, chunk_idx = args_tuple
+
+    # 각 워커에서 tokenizer 로드 (메모리 효율)
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+
+    # 토크나이징
+    texts = chunk_data if isinstance(chunk_data, list) else [chunk_data]
+
+    if packing:
+        tokenized = tokenizer(
+            texts,
+            truncation=False,
+            padding=False,
+            add_special_tokens=True,
+        )
+    else:
+        tokenized = tokenizer(
+            texts,
+            truncation=True,
+            max_length=max_seq_length,
+            padding=False,
+            add_special_tokens=True,
+        )
+
+    return tokenized["input_ids"]
+
+
 def tokenize_dataset(
     dataset,
     tokenizer,
@@ -575,12 +609,12 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    수동 배치 토크나이징 (datasets.map() 우회)
+    Python 멀티프로세싱 직접 병렬 토크나이징
 
-    datasets.map()을 사용하지 않고 직접 배치 처리:
-    - TOKENIZERS_PARALLELISM=true 완전 제어
-    - Rust Fast Tokenizer 내부 병렬 처리 최대 활용
-    - 메모리 효율적 (단일 프로세스)
+    datasets.map() 대신 Python multiprocessing 사용:
+    - 각 워커가 독립적으로 Rust 토크나이저 실행
+    - 메모리 효율적 (청크별 처리)
+    - datasets.map()보다 빠른 속도
 
     Args:
         dataset: HuggingFace Dataset 객체
@@ -588,73 +622,71 @@ def tokenize_dataset(
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
         packing: True면 truncation 없이 토큰화
-        num_proc: 사용 안됨 (하위 호환성)
+        num_proc: 프로세스 수 (None이면 CPU 코어 수)
 
     Returns:
         토큰화된 Dataset 객체
     """
+    import multiprocessing as mp
     from datasets import Dataset as HFDataset
     from tqdm import tqdm
+    import math
 
     total_samples = len(dataset)
 
-    # TOKENIZERS_PARALLELISM 강제 설정 (Rust 내부 병렬 처리)
-    os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
-    logger.info("   TOKENIZERS_PARALLELISM=true (Rust internal parallelism enabled)")
-    logger.info("   Using manual batching (datasets.map bypassed)")
+    # 프로세스 수 결정
+    if num_proc is None:
+        num_proc = min(8, mp.cpu_count())
+
+    logger.info(f"🔤 Tokenization config:")
+    logger.info(f"   Samples: {total_samples:,}")
+    logger.info(f"   Workers: {num_proc}")
+    logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
+    logger.info(f"   Method: Python multiprocessing (direct parallelism)")
 
     # Fast Tokenizer 확인
     if not tokenizer.is_fast:
         logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
-    # 배치 크기 설정 (대규모 배치로 Rust 병렬 처리 효율 극대화)
-    # 큰 배치일수록 Rust 내부 병렬 처리가 효율적으로 작동
-    batch_size = 100000  # 10만 샘플씩 처리
-
-    # 예상 시간 계산
-    estimated_speed = ESTIMATED_TOKENIZATION_SPEED
-    estimated_time = total_samples / estimated_speed / 60
-
-    logger.info(f"🔤 Tokenization config:")
-    logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Batch size: {batch_size:,}")
-    logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
-    logger.info(f"   Estimated time: ~{estimated_time:.0f} min")
-
     start_time = time.time()
-    all_input_ids = []
 
-    # 수동 배치 처리
-    for i in tqdm(range(0, total_samples, batch_size), desc="Tokenizing (manual batching)"):
-        # 배치 추출
-        batch_end = min(i + batch_size, total_samples)
-        batch = dataset[i:batch_end]
+    # 데이터를 청크로 분할
+    chunk_size = math.ceil(total_samples / num_proc)
+    chunks = []
+
+    for i in range(0, total_samples, chunk_size):
+        chunk_end = min(i + chunk_size, total_samples)
+        chunk = dataset[i:chunk_end]
 
         # 텍스트 추출
-        if isinstance(batch[text_column], list):
-            texts = batch[text_column]
+        if isinstance(chunk[text_column], list):
+            texts = chunk[text_column]
         else:
-            texts = [batch[text_column]]
+            texts = [chunk[text_column]]
 
-        # 토크나이징 (Rust 병렬 처리 활성)
-        if packing:
-            tokenized_batch = tokenizer(
-                texts,
-                truncation=False,
-                padding=False,
-                add_special_tokens=True,
-            )
-        else:
-            tokenized_batch = tokenizer(
-                texts,
-                truncation=True,
-                max_length=max_seq_length,
-                padding=False,
-                add_special_tokens=True,
-            )
+        chunks.append((
+            texts,
+            tokenizer.name_or_path,  # tokenizer 경로 전달
+            text_column,
+            max_seq_length,
+            packing,
+            len(chunks)
+        ))
 
-        # 결과 수집
-        all_input_ids.extend(tokenized_batch["input_ids"])
+    logger.info(f"   Processing {len(chunks)} chunks in parallel...")
+
+    # 멀티프로세싱으로 병렬 처리
+    with mp.Pool(processes=num_proc) as pool:
+        results = list(tqdm(
+            pool.imap(_tokenize_chunk, chunks),
+            total=len(chunks),
+            desc=f"Tokenizing ({num_proc} workers)"
+        ))
+
+    # 결과 병합
+    all_input_ids = []
+    for result in results:
+        all_input_ids.extend(result)
 
     # HuggingFace Dataset으로 변환
     tokenized = HFDataset.from_dict({"input_ids": all_input_ids})
