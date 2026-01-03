@@ -571,108 +571,88 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    최적화된 토큰화 함수 (모든 코드 경로에서 공유)
+    수동 배치 토크나이징 (datasets.map() 우회)
 
-    핵심 최적화:
-    - TOKENIZERS_PARALLELISM=false + num_proc=N (멀티프로세싱)
-    - 각 프로세스가 독립적으로 Fast Tokenizer 실행 = 최대 병렬화
-    - batch_size 자동 조정 (IPC 오버헤드 최소화)
+    datasets.map()을 사용하지 않고 직접 배치 처리:
+    - TOKENIZERS_PARALLELISM=true 완전 제어
+    - Rust Fast Tokenizer 내부 병렬 처리 최대 활용
+    - 메모리 효율적 (단일 프로세스)
 
     Args:
         dataset: HuggingFace Dataset 객체
         tokenizer: 토크나이저 (Fast Tokenizer 권장)
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
-        packing: True면 truncation 없이 토큰화 (나중에 concatenate)
-        num_proc: 프로세스 수 (None이면 자동 결정)
+        packing: True면 truncation 없이 토큰화
+        num_proc: 사용 안됨 (하위 호환성)
 
     Returns:
         토큰화된 Dataset 객체
     """
-    import multiprocessing
+    from datasets import Dataset as HFDataset
+    from tqdm import tqdm
 
     total_samples = len(dataset)
-    cpu_count = multiprocessing.cpu_count()
 
-    # 데이터셋 크기에 따라 최적 프로세스 수 자동 결정
-    if num_proc is None:
-        env_num_proc = os.getenv(ENV_DATASET_NUM_PROC)
-        if env_num_proc:
-            num_proc = int(env_num_proc)
-        else:
-            # CPU, 메모리, 데이터 크기를 고려한 최적 프로세스 수 계산
-            num_proc = calculate_optimal_num_proc(total_samples, cpu_count)
-
-    # 배치 크기도 데이터셋 크기에 따라 조절
-    batch_size = BATCH_SIZE_LARGE_DATASET if total_samples > DATASET_SIZE_LARGE else BATCH_SIZE_DEFAULT
-    writer_batch_size = WRITER_BATCH_SIZE
-
-    # TOKENIZERS_PARALLELISM 설정
-    # num_proc=1: Rust 내부 병렬 처리 활성화 (true)
-    # num_proc>1: Python 멀티프로세싱 사용, Rust 병렬 비활성화 (false)
-    if num_proc == 1:
-        os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"  # Rust 멀티스레딩 활성화!
-        logger.info("   TOKENIZERS_PARALLELISM=true (Rust internal parallelism enabled)")
-    else:
-        os.environ[ENV_TOKENIZERS_PARALLELISM] = "false"  # Python 멀티프로세싱 사용
-        logger.info("   TOKENIZERS_PARALLELISM=false (Python multiprocessing mode)")
+    # TOKENIZERS_PARALLELISM 강제 설정 (Rust 내부 병렬 처리)
+    os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
+    logger.info("   TOKENIZERS_PARALLELISM=true (Rust internal parallelism enabled)")
+    logger.info("   Using manual batching (datasets.map bypassed)")
 
     # Fast Tokenizer 확인
     if not tokenizer.is_fast:
         logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
+    # 배치 크기 설정 (큰 배치로 Rust 병렬 처리 효율 극대화)
+    batch_size = 10000
+
     # 예상 시간 계산
-    estimated_speed = num_proc * ESTIMATED_TOKENIZATION_SPEED
+    estimated_speed = ESTIMATED_TOKENIZATION_SPEED
     estimated_time = total_samples / estimated_speed / 60
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Processes: {num_proc} (auto-tuned for dataset size)")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
     logger.info(f"   Estimated time: ~{estimated_time:.0f} min")
 
     start_time = time.time()
+    all_input_ids = []
 
-    if packing:
-        # Packing 모드: truncation 없이 토큰화 (나중에 concatenate)
-        def batch_tokenize(examples):
-            # datasets.map()이 TOKENIZERS_PARALLELISM을 false로 재설정하므로
-            # 매 배치마다 true로 재설정 (Rust 병렬 처리 활성화)
-            os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
-            return tokenizer(
-                examples[text_column],
+    # 수동 배치 처리
+    for i in tqdm(range(0, total_samples, batch_size), desc="Tokenizing (manual batching)"):
+        # 배치 추출
+        batch_end = min(i + batch_size, total_samples)
+        batch = dataset[i:batch_end]
+
+        # 텍스트 추출
+        if isinstance(batch[text_column], list):
+            texts = batch[text_column]
+        else:
+            texts = [batch[text_column]]
+
+        # 토크나이징 (Rust 병렬 처리 활성)
+        if packing:
+            tokenized_batch = tokenizer(
+                texts,
                 truncation=False,
                 padding=False,
                 add_special_tokens=True,
             )
-    else:
-        # 일반 모드: truncation 적용
-        def batch_tokenize(examples):
-            # datasets.map()이 TOKENIZERS_PARALLELISM을 false로 재설정하므로
-            # 매 배치마다 true로 재설정 (Rust 병렬 처리 활성화)
-            os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
-            return tokenizer(
-                examples[text_column],
+        else:
+            tokenized_batch = tokenizer(
+                texts,
                 truncation=True,
                 max_length=max_seq_length,
                 padding=False,
+                add_special_tokens=True,
             )
 
-    tokenized = dataset.map(
-        batch_tokenize,
-        batched=True,
-        batch_size=batch_size,
-        num_proc=num_proc,
-        remove_columns=dataset.column_names,
-        load_from_cache_file=False,
-        writer_batch_size=writer_batch_size,
-        keep_in_memory=False,
-        desc=f"Tokenizing ({num_proc} procs)",
-    )
+        # 결과 수집
+        all_input_ids.extend(tokenized_batch["input_ids"])
 
-    # datasets.map() 완료 후 TOKENIZERS_PARALLELISM 복원
-    os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
+    # HuggingFace Dataset으로 변환
+    tokenized = HFDataset.from_dict({"input_ids": all_input_ids})
 
     elapsed = time.time() - start_time
     speed = total_samples / elapsed if elapsed > 0 else 0
