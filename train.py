@@ -566,40 +566,6 @@ def concatenate_sequences(
 # Optimized Tokenization Function
 # ============================================================================
 
-def _tokenize_chunk(args_tuple):
-    """
-    Worker 함수: 데이터 청크를 토크나이징 (멀티프로세싱용)
-
-    각 워커 프로세스가 독립적으로 tokenizer를 로드하고 자신의 청크를 처리
-    """
-    chunk_data, tokenizer_path, text_column, max_seq_length, packing, chunk_idx = args_tuple
-
-    # 각 워커에서 tokenizer 로드 (메모리 효율)
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-
-    # 토크나이징
-    texts = chunk_data if isinstance(chunk_data, list) else [chunk_data]
-
-    if packing:
-        tokenized = tokenizer(
-            texts,
-            truncation=False,
-            padding=False,
-            add_special_tokens=True,
-        )
-    else:
-        tokenized = tokenizer(
-            texts,
-            truncation=True,
-            max_length=max_seq_length,
-            padding=False,
-            add_special_tokens=True,
-        )
-
-    return tokenized["input_ids"]
-
-
 def tokenize_dataset(
     dataset,
     tokenizer,
@@ -609,12 +575,12 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    Python 멀티프로세싱 직접 병렬 토크나이징
+    대규모 배치 단일 프로세스 토크나이징 (메모리 효율 최적화)
 
-    datasets.map() 대신 Python multiprocessing 사용:
-    - 각 워커가 독립적으로 Rust 토크나이저 실행
-    - 메모리 효율적 (청크별 처리)
-    - datasets.map()보다 빠른 속도
+    멀티프로세싱 대신 큰 배치로 처리:
+    - 메모리 효율적 (복사 없음)
+    - Rust 토크나이저 활용
+    - 안정적 (pickle 문제 없음)
 
     Args:
         dataset: HuggingFace Dataset 객체
@@ -622,73 +588,82 @@ def tokenize_dataset(
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
         packing: True면 truncation 없이 토큰화
-        num_proc: 프로세스 수 (None이면 CPU 코어 수)
+        num_proc: 사용 안됨 (하위 호환성)
 
     Returns:
         토큰화된 Dataset 객체
     """
-    import multiprocessing as mp
     from datasets import Dataset as HFDataset
-    from tqdm import tqdm
-    import math
+    import gc
 
     total_samples = len(dataset)
 
-    # 프로세스 수 결정
-    if num_proc is None:
-        num_proc = min(8, mp.cpu_count())
+    # 배치 크기 - 메모리와 속도 균형
+    batch_size = 50000  # 5만 샘플씩
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Workers: {num_proc}")
+    logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
-    logger.info(f"   Method: Python multiprocessing (direct parallelism)")
+    logger.info(f"   Method: Large batch processing")
 
     # Fast Tokenizer 확인
     if not tokenizer.is_fast:
         logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
     start_time = time.time()
+    all_input_ids = []
 
-    # 데이터를 청크로 분할
-    chunk_size = math.ceil(total_samples / num_proc)
-    chunks = []
+    # 배치별 처리
+    num_batches = (total_samples + batch_size - 1) // batch_size
+    logger.info(f"   Processing {num_batches} batches...")
 
-    for i in range(0, total_samples, chunk_size):
-        chunk_end = min(i + chunk_size, total_samples)
-        chunk = dataset[i:chunk_end]
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, total_samples)
+
+        # 진행 상황 출력
+        if batch_idx % 10 == 0 or batch_idx == num_batches - 1:
+            progress = (batch_idx + 1) / num_batches * 100
+            logger.info(f"   Batch {batch_idx+1}/{num_batches} ({progress:.1f}%)")
+
+        # 배치 추출
+        batch = dataset[start_idx:end_idx]
 
         # 텍스트 추출
-        if isinstance(chunk[text_column], list):
-            texts = chunk[text_column]
+        if isinstance(batch[text_column], list):
+            texts = batch[text_column]
         else:
-            texts = [chunk[text_column]]
+            texts = [batch[text_column]]
 
-        chunks.append((
-            texts,
-            tokenizer.name_or_path,  # tokenizer 경로 전달
-            text_column,
-            max_seq_length,
-            packing,
-            len(chunks)
-        ))
+        # 토크나이징
+        if packing:
+            tokenized_batch = tokenizer(
+                texts,
+                truncation=False,
+                padding=False,
+                add_special_tokens=True,
+            )
+        else:
+            tokenized_batch = tokenizer(
+                texts,
+                truncation=True,
+                max_length=max_seq_length,
+                padding=False,
+                add_special_tokens=True,
+            )
 
-    logger.info(f"   Processing {len(chunks)} chunks in parallel...")
+        # 결과 수집
+        all_input_ids.extend(tokenized_batch["input_ids"])
 
-    # 멀티프로세싱으로 병렬 처리
-    with mp.Pool(processes=num_proc) as pool:
-        results = list(tqdm(
-            pool.imap(_tokenize_chunk, chunks),
-            total=len(chunks),
-            desc=f"Tokenizing ({num_proc} workers)"
-        ))
-
-    # 결과 병합
-    all_input_ids = []
-    for result in results:
-        all_input_ids.extend(result)
+        # 메모리 해제
+        del batch
+        del texts
+        del tokenized_batch
+        gc.collect()
 
     # HuggingFace Dataset으로 변환
+    logger.info(f"   Converting to Dataset...")
     tokenized = HFDataset.from_dict({"input_ids": all_input_ids})
 
     elapsed = time.time() - start_time
