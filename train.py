@@ -70,10 +70,10 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (단일 프로세스로 메모리 안정성 + Rust 속도)
-DEFAULT_NUM_PROC = 1  # Rust Fast Tokenizer는 단일 프로세스가 가장 빠름
-FILTER_NUM_PROC_DIVISOR = 1  # 필터링도 단일 프로세스
-MAX_FILTER_NUM_PROC = 1  # 메모리 안정성
+# Default process counts (멀티프로세싱)
+DEFAULT_NUM_PROC = 8  # 병렬 처리
+FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스
+MAX_FILTER_NUM_PROC = 8  # 최대 프로세스
 
 # Performance settings
 ESTIMATED_TOKENIZATION_SPEED = 5000  # samples/sec (Rust Fast Tokenizer 단일 프로세스)
@@ -326,10 +326,24 @@ def calculate_optimal_num_proc(total_samples: int, cpu_count: int, available_mem
         else:
             available_memory = 16 * 1024**3  # 16GB 기본값
 
-    # Rust Fast Tokenizer는 단일 프로세스가 가장 효율적
-    # 멀티프로세싱 오버헤드 > Rust 병렬 처리 이점
-    # 메모리 안정성도 최고
-    return 1
+    # 프로세스당 예상 메모리 사용량 (10GB)
+    estimated_memory_per_proc = 10 * 1024**3
+    max_proc_by_memory = max(1, int(available_memory / estimated_memory_per_proc))
+
+    # CPU 코어 기반 제한
+    max_proc_by_cpu = min(cpu_count, DEFAULT_NUM_PROC)
+
+    # 데이터 크기 기반 제한 (작은 데이터셋은 적은 프로세스)
+    if total_samples < 10000:
+        max_proc_by_data = 2
+    elif total_samples < 100000:
+        max_proc_by_data = 4
+    else:
+        max_proc_by_data = 8
+
+    # 최소값 선택
+    optimal = min(max_proc_by_memory, max_proc_by_cpu, max_proc_by_data)
+    return max(1, optimal)  # 최소 1개
 
 
 def get_tokenization_env_config() -> Dict[str, int]:
@@ -1389,11 +1403,22 @@ def tokenize_single_source(
             'num_samples': num_samples,
         }
     else:
-        # 다른 rank는 cache_path만 반환 (barrier 후 로드 예정)
+        # 다른 rank는 마커 파일 대기
+        logger.info(f"[Rank {rank}] Waiting for tokenization to complete...")
+        if not wait_for_marker(tokenized_marker, TOKENIZATION_TIMEOUT, CHECK_INTERVAL, rank):
+            raise TimeoutError(f"Rank {rank}: Tokenization timeout after {TOKENIZATION_TIMEOUT}s")
+
+        logger.info(f"[Rank {rank}] ✅ Tokenization completed, loading info...")
+        # 샘플 수 확인을 위해 dataset 로드
+        tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+        num_samples = len(tokenized_dataset)
+        del tokenized_dataset
+        gc.collect()
+
         return {
             'name': src_name,
             'cache_path': tokenized_cache_path,
-            'num_samples': 0,  # barrier 후 로드시 알게됨
+            'num_samples': num_samples,
         }
 
 
