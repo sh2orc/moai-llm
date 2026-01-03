@@ -607,8 +607,9 @@ def tokenize_dataset(
     if not tokenizer.is_fast:
         logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
-    # 배치 크기 설정 (큰 배치로 Rust 병렬 처리 효율 극대화)
-    batch_size = 10000
+    # 배치 크기 설정 (대규모 배치로 Rust 병렬 처리 효율 극대화)
+    # 큰 배치일수록 Rust 내부 병렬 처리가 효율적으로 작동
+    batch_size = 100000  # 10만 샘플씩 처리
 
     # 예상 시간 계산
     estimated_speed = ESTIMATED_TOKENIZATION_SPEED
