@@ -70,13 +70,13 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (Rust 내부 병렬화)
-DEFAULT_NUM_PROC = 1  # 단일 프로세스 (Rust 멀티스레딩 활용)
+# Default process counts (멀티프로세싱)
+DEFAULT_NUM_PROC = 12  # 12개 프로세스 병렬 처리
 FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스
 MAX_FILTER_NUM_PROC = 2  # 최대 필터링 프로세스
 
 # Performance settings
-ESTIMATED_TOKENIZATION_SPEED = 8000  # samples/sec (Rust internal parallelism)
+ESTIMATED_TOKENIZATION_SPEED = 7800  # samples/sec (num_proc=12)
 WARMUP_TEXT_PATTERN = "Hello world " * 100
 WARMUP_TEXT_COUNT = 10
 
@@ -579,108 +579,63 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    순수 Rust tokenizer 사용 (Python GIL 완전 우회)
+    datasets.map() 멀티프로세싱으로 빠른 토크나이징
 
     Args:
         dataset: HuggingFace Dataset 객체
-        tokenizer: transformers 토크나이저 (내부에서 Rust 토크나이저 추출)
+        tokenizer: 토크나이저
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
         packing: True면 truncation 없이 토큰화
-        num_proc: 사용 안함 (Rust 내부 병렬화)
+        num_proc: 프로세스 수 (None이면 12)
 
     Returns:
         토큰화된 Dataset 객체
     """
-    from tokenizers import Tokenizer
-
     total_samples = len(dataset)
-    batch_size = 20000  # Rust 병렬화 최적 배치 크기
+
+    # num_proc 설정
+    if num_proc is None:
+        num_proc = 12  # 12개 프로세스 병렬 처리
+
+    batch_size = 10000  # 배치 크기
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Method: Pure Rust tokenizer (zero Python overhead)")
+    logger.info(f"   Processes: {num_proc}")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
-    logger.info(f"   TOKENIZERS_PARALLELISM: {os.environ.get('TOKENIZERS_PARALLELISM', 'not set')}")
-    logger.info(f"   RAYON_NUM_THREADS: {os.environ.get('RAYON_NUM_THREADS', 'auto')}")
-
-    # Rust tokenizer 추출 (transformers wrapper 우회)
-    if hasattr(tokenizer, '_tokenizer'):
-        # Fast Tokenizer의 내부 Rust tokenizer 추출
-        rust_tokenizer = tokenizer._tokenizer
-        logger.info(f"   Using native Rust tokenizer (extracted from transformers)")
-    elif hasattr(tokenizer, 'backend_tokenizer'):
-        rust_tokenizer = tokenizer.backend_tokenizer
-        logger.info(f"   Using native Rust tokenizer (backend)")
-    else:
-        logger.warning(f"   ⚠️  Could not extract Rust tokenizer, falling back to transformers wrapper")
-        rust_tokenizer = None
 
     start_time = time.time()
 
-    # Iteration 기반 토크나이징 (인덱싱 회피)
-    logger.info(f"   Tokenizing {total_samples:,} texts in batches of {batch_size:,}...")
-    logger.info(f"   Using iteration-based approach (avoiding index overhead)...")
+    # 토크나이징 함수
+    def batch_tokenize(examples):
+        if packing:
+            return tokenizer(
+                examples[text_column],
+                truncation=False,
+                padding=False,
+                add_special_tokens=True,
+            )
+        else:
+            return tokenizer(
+                examples[text_column],
+                truncation=True,
+                max_length=max_seq_length,
+                padding=False,
+                add_special_tokens=True,
+            )
 
-    all_input_ids = []
-    num_batches = (total_samples + batch_size - 1) // batch_size
-
-    batch_texts = []
-    batch_idx = 0
-    processed = 0
-
-    # Dataset을 순회하면서 배치 단위로 처리
-    for idx, example in enumerate(dataset):
-        batch_texts.append(example[text_column])
-
-        # 배치가 찼거나 마지막 샘플인 경우 토크나이징
-        if len(batch_texts) >= batch_size or idx == total_samples - 1:
-            batch_idx += 1
-
-            # Rust tokenizer 직접 사용 (GIL 우회)
-            if rust_tokenizer is not None:
-                # 순수 Rust encode_batch() 사용
-                if packing:
-                    # Truncation 없이 인코딩
-                    encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
-                    batch_input_ids = [enc.ids for enc in encodings]
-                else:
-                    # Truncation 적용
-                    rust_tokenizer.enable_truncation(max_seq_length)
-                    encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
-                    batch_input_ids = [enc.ids for enc in encodings]
-                    rust_tokenizer.no_truncation()  # 원상복구
-            else:
-                # Fallback: transformers wrapper 사용
-                encoded = tokenizer(
-                    batch_texts,
-                    truncation=not packing,
-                    max_length=max_seq_length if not packing else None,
-                    padding=False,
-                    add_special_tokens=True,
-                    return_tensors=None
-                )
-                batch_input_ids = encoded['input_ids']
-
-            all_input_ids.extend(batch_input_ids)
-            processed += len(batch_texts)
-
-            # 메모리 해제
-            batch_texts = []
-            gc.collect()
-
-            # 진행 상황 로깅
-            if batch_idx % 10 == 0 or batch_idx == num_batches:
-                elapsed = time.time() - start_time
-                speed = processed / elapsed if elapsed > 0 else 0
-                logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {processed:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
-
-    # Dataset으로 변환
-    logger.info(f"   Converting to Dataset format...")
-    tokenized = HFDataset.from_dict({'input_ids': all_input_ids})
-    del all_input_ids
-    gc.collect()
+    # datasets.map() 사용
+    tokenized = dataset.map(
+        batch_tokenize,
+        batched=True,
+        batch_size=batch_size,
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+        load_from_cache_file=False,
+        desc=f"Tokenizing",
+    )
 
     elapsed = time.time() - start_time
     speed = total_samples / elapsed if elapsed > 0 else 0
