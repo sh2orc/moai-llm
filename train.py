@@ -853,7 +853,7 @@ def tokenize_non_sequential_dataset(tokenizer, args):
         args: 학습 인자
 
     Returns:
-        tokenized_dataset: 토크나이징된 Dataset 객체
+        dict: {'cache_path': Path, 'num_samples': int}
     """
     import gc
     from datasets import Dataset as HFDataset
@@ -965,15 +965,21 @@ def tokenize_non_sequential_dataset(tokenizer, args):
         logger.info(f"✅ [Rank {rank}] Loaded {len(tokenized_dataset):,} samples")
 
     # 메모리 정리
+    num_samples = len(tokenized_dataset)
     del dataset
+    del tokenized_dataset  # 메모리 해제 - 나중에 모든 rank가 함께 로드
     gc.collect()
 
     if is_main_process:
-        logger.info(f"✅ Tokenization complete: {len(tokenized_dataset):,} samples ready for training")
+        logger.info(f"✅ Tokenization complete: {num_samples:,} samples ready")
     else:
-        logger.info(f"✅ [Rank {rank}] Ready for training with {len(tokenized_dataset):,} samples")
+        logger.info(f"✅ [Rank {rank}] Tokenization ready: {num_samples:,} samples")
 
-    return tokenized_dataset
+    # Sequential mode와 동일한 형식으로 반환
+    return {
+        'cache_path': tokenized_cache_path,
+        'num_samples': num_samples,
+    }
 
 
 # ============================================================================
@@ -1544,182 +1550,6 @@ def setup_model_and_tokenizer(
 # 학습
 # ============================================================================
 
-def train_sequential(tokenized_datasets_info: list, tokenizer, args):
-    """
-    이미 토크나이징된 데이터셋으로 순차 학습 수행
-
-    Args:
-        tokenized_datasets_info: [{'name': str, 'cache_path': Path, 'num_samples': int}, ...]
-        tokenizer: 토크나이저
-        args: 학습 인자
-    """
-    import gc
-    import sys
-    from datasets import Dataset as HFDataset
-
-    # DDP 환경 정보
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    rank = int(os.environ.get("RANK", 0))
-    is_distributed = world_size > 1
-    is_main_process = rank == 0
-
-    if is_main_process:
-        logger.info("="*80)
-        logger.info("🎯 Sequential Training")
-        logger.info("="*80)
-
-    # W&B 초기화 (선택적)
-    if args.use_wandb:
-        try:
-            import wandb
-            if is_main_process:
-                wandb.init(
-                    project=args.wandb_project,
-                    name=args.wandb_run_name,
-                    config=vars(args),
-                )
-                logger.info(f"📊 W&B initialized: {args.wandb_project}")
-        except ImportError:
-            logger.warning("⚠️ wandb not installed")
-            args.use_wandb = False
-
-    current_checkpoint = args.pretrained_model
-
-    for idx, dataset_info in enumerate(tokenized_datasets_info):
-        if is_main_process:
-            logger.info("")
-            logger.info("="*80)
-            logger.info(f"🚀 Training [{idx+1}/{len(tokenized_datasets_info)}]: {dataset_info['name']}")
-            logger.info(f"   Samples: {dataset_info['num_samples']:,}")
-            logger.info("="*80)
-
-        # 모델 로드
-        if is_main_process:
-            if idx == 0:
-                logger.info(f"⏳ Loading model from: {current_checkpoint or 'scratch'}")
-            else:
-                logger.info(f"⏳ Resuming from: {current_checkpoint}")
-
-        model, _ = setup_model_and_tokenizer(
-            tokenizer_path=args.tokenizer_path,
-            model_config=args.model_config,
-            pretrained_model=current_checkpoint,
-            use_flash_attention=args.flash_attention,
-            use_compile=args.compile,
-            use_bf16=args.bf16,
-            use_fp16=args.fp16,
-        )
-        if is_main_process:
-            logger.info(f"✓ Model loaded")
-
-        # 토큰화된 데이터셋 로드
-        if is_main_process:
-            logger.info(f"📥 Loading tokenized dataset...")
-
-        tokenized_dataset = HFDataset.load_from_disk(str(dataset_info['cache_path']))
-
-        if is_main_process:
-            logger.info(f"✓ Loaded {len(tokenized_dataset):,} samples")
-
-        # Data Collator
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer,
-            mlm=False,
-        )
-
-        # Training Arguments
-        stage_output_dir = f"{args.output_dir}/stage_{idx+1}"
-
-        # GPU 최적화 파라미터 계산
-        optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
-
-        training_args = TrainingArguments(
-            output_dir=stage_output_dir,
-            num_train_epochs=args.num_epochs,
-            per_device_train_batch_size=args.batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            warmup_steps=WARMUP_STEPS_FIRST_STAGE if idx == 0 else WARMUP_STEPS_RESUME,
-            logging_steps=args.logging_steps,
-            save_steps=args.save_steps,
-            save_total_limit=2,
-            bf16=args.bf16,
-            fp16=args.fp16,
-            gradient_checkpointing=args.gradient_checkpointing,
-            dataloader_num_workers=args.dataloader_num_workers,
-            remove_unused_columns=False,
-            report_to=["wandb"] if args.use_wandb else ["tensorboard"],
-            max_steps=args.max_steps if args.max_steps > 0 else -1,
-            save_safetensors=True,
-            # I/O 최적화
-            dataloader_pin_memory=True,
-            dataloader_prefetch_factor=optimal_prefetch,  # GPU 메모리 기반 동적 설정
-            dataloader_persistent_workers=True,  # worker 재사용
-            dataloader_drop_last=True,
-            # 옵티마이저 및 정밀도
-            optim="adamw_torch_fused",
-            ddp_find_unused_parameters=False,
-            tf32=True,
-            # 배치 최적화
-            group_by_length=not getattr(args, 'packing', False),  # packing 없을 때만 그룹핑
-            max_grad_norm=1.0,
-            gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_dataset,
-            data_collator=data_collator,
-        )
-
-        if is_main_process:
-            logger.info(f"🏃 Starting training...")
-        trainer.train()
-
-        # 체크포인트 저장
-        checkpoint_path = f"{stage_output_dir}/checkpoint"
-        trainer.save_model(checkpoint_path)
-
-        # DDP barrier
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-
-        # dtype 유지하며 저장 (rank 0만)
-        if is_main_process:
-            model_dtype = next(model.parameters()).dtype
-            if model_dtype in (torch.bfloat16, torch.float16):
-                logger.info(f"💾 Re-saving model in {model_dtype} format...")
-                model.save_pretrained(checkpoint_path, torch_dtype=model_dtype, safe_serialization=True)
-            logger.info(f"✅ Stage {idx+1} completed: {checkpoint_path}")
-
-        # 다음 라운드를 위해 체크포인트 경로 업데이트
-        current_checkpoint = checkpoint_path
-
-        # 메모리 해제
-        del model
-        del tokenized_dataset
-        del trainer
-        gc.collect()
-
-        try:
-            torch.cuda.empty_cache()
-        except:
-            pass
-
-        # DDP barrier
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-
-    # 최종 완료
-    if is_main_process:
-        logger.info("="*80)
-        logger.info("🎉 Sequential training completed!")
-        logger.info(f"📁 Final model: {current_checkpoint}")
-        logger.info("="*80)
-
-
 # ============================================================================
 # Main Train Function
 # ============================================================================
@@ -1772,10 +1602,14 @@ def train(args):
         logger.info(f"   Warmup completed in {warmup_time:.2f}s")
 
     # ============================================================================
-    # Sequential 모드: 먼저 토크나이징 후 학습
+    # STEP 1: 데이터 로드 및 토크나이징 (Sequential/Non-sequential 통합)
     # ============================================================================
-    if args.sequential and args.dataset and len(args.dataset) > 1:
-        logger.info("📦 Sequential mode: Processing datasets one by one")
+    # Sequential 또는 Non-sequential 모드 결정
+    is_sequential = args.sequential and args.dataset and len(args.dataset) > 1
+
+    if is_sequential:
+        if is_main_process:
+            logger.info("📦 Sequential mode: Processing datasets one by one")
 
         # 데이터 소스 리스트 준비
         dataset_names = args.dataset if args.dataset else []
@@ -1792,145 +1626,219 @@ def train(args):
             for i, (src_type, src_name) in enumerate(all_sources):
                 logger.info(f"  {i+1}. [{src_type}] {src_name}")
 
-        # 토크나이징 (DDP 전, Rank 0만 실행)
+        # 토크나이징 (Rank 0만 실행, 다른 rank는 함수 내부에서 대기)
         tokenized_datasets_info = tokenize_all_datasets(all_sources, tokenizer, args)
+    else:
+        if is_main_process:
+            logger.info("📦 Single dataset mode")
 
-        # DDP Barrier
-        if is_distributed:
-            import torch.distributed as dist
-            if dist.is_initialized():
-                dist.barrier()
+        # Non-sequential 토크나이징
+        cache_info = tokenize_non_sequential_dataset(tokenizer, args)
 
-        # Tokenize-only 모드
-        if hasattr(args, '_tokenize_only') and args._tokenize_only:
+        # Sequential과 동일한 형식으로 변환 (리스트 형태)
+        tokenized_datasets_info = [{
+            'name': 'merged_dataset',
+            'cache_path': cache_info['cache_path'],
+            'num_samples': cache_info['num_samples'],
+        }]
+
+    # DDP Barrier (모든 rank 동기화)
+    if is_main_process:
+        logger.info("⏳ Synchronizing all ranks after tokenization...")
+    ddp_barrier()
+    if is_main_process:
+        logger.info("✅ All ranks synchronized!")
+
+    # Tokenize-only 모드
+    if hasattr(args, '_tokenize_only') and args._tokenize_only:
+        if is_main_process:
             logger.info("="*80)
             logger.info("✅ Tokenization completed! (tokenize-only mode)")
             logger.info("="*80)
-            return
-
-        # 학습
-        train_sequential(tokenized_datasets_info, tokenizer, args)
         return
+    
+    # ============================================================================
+    # STEP 2: W&B 초기화 (선택적)
+    # ============================================================================
+    if args.use_wandb:
+        try:
+            import wandb
+            if is_main_process:
+                wandb.init(
+                    project=args.wandb_project,
+                    name=args.wandb_run_name,
+                    config=vars(args),
+                )
+                logger.info(f"📊 W&B initialized: {args.wandb_project}")
+        except ImportError:
+            logger.warning("⚠️ wandb not installed")
+            args.use_wandb = False
 
     # ============================================================================
-    # STEP 1: 토크나이징 (Non-sequential 모드)
+    # STEP 3: 학습 루프 (Sequential/Non-sequential 통합)
     # ============================================================================
-    tokenized_dataset = tokenize_non_sequential_dataset(tokenizer, args)
-    
-    # ============================================================================
-    # STEP 2: DDP 초기화 및 모델 로드
-    # ============================================================================
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    rank = int(os.environ.get("RANK", 0))
-    if world_size > 1:
-        logger.info(f"🌐 Distributed Training: Rank {rank}/{world_size}")
-        logger.info(f"⏳ Initializing DDP environment...")
-    else:
-        logger.info(f"💻 Single GPU Training")
-    
-    logger.info("⏳ Loading model...")
-    model, _ = setup_model_and_tokenizer(
-        tokenizer_path=args.tokenizer_path,
-        model_config=args.model_config,
-        pretrained_model=args.pretrained_model,
-        use_flash_attention=args.flash_attention,
-        use_compile=args.compile,
-        use_bf16=args.bf16,
-        use_fp16=args.fp16,
-    )
-    
-    # ============================================================================
-    # STEP 3: 학습 시작
-    # ============================================================================
-    logger.info("🚀 Starting training with pre-tokenized data...")
-    
-    # 4. Data Collator
+    from datasets import Dataset as HFDataset
+    import gc
+
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("🎯 Starting Training")
+        logger.info(f"   Datasets: {len(tokenized_datasets_info)}")
+        logger.info("="*80)
+
+    # Data Collator (공통)
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False,  # Causal LM
+        mlm=False,
     )
 
-    # 5. Training Arguments (최적화 옵션 포함)
-    # GPU 최적화 파라미터 계산
-    optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
+    # Sequential: 각 데이터셋마다 체크포인트 업데이트
+    # Non-sequential: 단일 학습
+    current_checkpoint = args.pretrained_model
 
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.num_epochs,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        warmup_steps=args.warmup_steps,
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        max_steps=args.max_steps if args.max_steps > 0 else -1,
-        bf16=args.bf16,
-        fp16=args.fp16,
-        gradient_checkpointing=args.gradient_checkpointing,
-        dataloader_num_workers=args.dataloader_num_workers,
-        remove_unused_columns=False,
-        report_to=["wandb"] if args.use_wandb else ["tensorboard"],
-        save_safetensors=True,
-        ddp_find_unused_parameters=False,
-        # I/O 최적화
-        dataloader_pin_memory=True,  # GPU 전송 속도 향상
-        dataloader_prefetch_factor=optimal_prefetch,  # GPU 메모리 기반 동적 설정
-        dataloader_persistent_workers=True,  # worker 재사용
-        dataloader_drop_last=True,  # 불완전 배치 제거
-        # 옵티마이저 및 정밀도
-        optim="adamw_torch_fused",  # Fused Adam (faster)
-        tf32=True,  # TF32 사용 (Ampere GPU)
-        # 배치 최적화
-        group_by_length=not getattr(args, 'packing', False),  # packing 없을 때만 그룹핑
-        max_grad_norm=1.0,  # 그래디언트 클리핑
-        gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
-    )
+    for idx, dataset_info in enumerate(tokenized_datasets_info):
+        if is_main_process:
+            logger.info("")
+            logger.info("="*80)
+            if is_sequential:
+                logger.info(f"🚀 Training [{idx+1}/{len(tokenized_datasets_info)}]: {dataset_info['name']}")
+            else:
+                logger.info(f"🚀 Training: {dataset_info['name']}")
+            logger.info(f"   Samples: {dataset_info['num_samples']:,}")
+            logger.info("="*80)
 
-    # 6. Trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_dataset,
-        data_collator=data_collator,
-    )
+        # 모델 로드
+        if is_main_process:
+            if idx == 0:
+                logger.info(f"⏳ Loading model from: {current_checkpoint or 'scratch'}")
+            else:
+                logger.info(f"⏳ Resuming from: {current_checkpoint}")
 
-    # 7. 학습 시작
-    logger.info("="*80)
-    logger.info("🎯 Training configuration:")
-    logger.info(f"  Mode: {args.mode}")
-    logger.info(f"  Packing: {args.packing}")
-    logger.info(f"  Output: {args.output_dir}")
-    logger.info(f"  Batch size: {args.batch_size}")
-    logger.info(f"  Learning rate: {args.learning_rate}")
-    logger.info(f"  Max steps: {args.max_steps if args.max_steps > 0 else 'Full epoch'}")
-    logger.info(f"  Logging: {'wandb' if args.use_wandb else 'tensorboard'}")
-    if args.resume_from_checkpoint:
-        logger.info(f"  Resume from: {args.resume_from_checkpoint}")
-    logger.info("="*80)
+        model, _ = setup_model_and_tokenizer(
+            tokenizer_path=args.tokenizer_path,
+            model_config=args.model_config,
+            pretrained_model=current_checkpoint,
+            use_flash_attention=args.flash_attention,
+            use_compile=args.compile,
+            use_bf16=args.bf16,
+            use_fp16=args.fp16,
+        )
+        if is_main_process:
+            logger.info(f"✓ Model loaded")
 
-    logger.info("🏃 Starting training...")
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+        # 토크나이징된 데이터셋 로드 (모든 rank)
+        if is_main_process:
+            logger.info(f"📥 Loading tokenized dataset from cache...")
 
-    # 8. 모델 저장
-    logger.info("💾 Saving final model...")
-    final_path = Path(args.output_dir) / "final_model"
-    trainer.save_model(str(final_path))
-    
-    # 모델 dtype 확인 및 bf16/fp16으로 명시적 저장
-    model_dtype = next(model.parameters()).dtype
-    if model_dtype in (torch.bfloat16, torch.float16):
-        logger.info(f"💾 Re-saving model in {model_dtype} format for compatibility...")
-        model.save_pretrained(str(final_path), torch_dtype=model_dtype, safe_serialization=True)
-    
-    tokenizer.save_pretrained(str(final_path))
-    
-    logger.info("="*80)
-    logger.info(f"✅ Training completed!")
-    logger.info(f"📁 Model saved to: {final_path}")
-    logger.info(f"📊 Model dtype: {model_dtype}")
-    logger.info("="*80)
+        tokenized_dataset = HFDataset.load_from_disk(str(dataset_info['cache_path']))
+
+        if is_main_process:
+            logger.info(f"✓ Loaded {len(tokenized_dataset):,} samples")
+
+        # Training Arguments
+        if is_sequential:
+            stage_output_dir = f"{args.output_dir}/stage_{idx+1}"
+        else:
+            stage_output_dir = args.output_dir
+
+        optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
+
+        training_args = TrainingArguments(
+            output_dir=stage_output_dir,
+            num_train_epochs=args.num_epochs,
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            warmup_steps=WARMUP_STEPS_FIRST_STAGE if idx == 0 else WARMUP_STEPS_RESUME,
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+            save_total_limit=2,
+            bf16=args.bf16,
+            fp16=args.fp16,
+            gradient_checkpointing=args.gradient_checkpointing,
+            dataloader_num_workers=args.dataloader_num_workers,
+            remove_unused_columns=False,
+            report_to=["wandb"] if args.use_wandb else ["tensorboard"],
+            max_steps=args.max_steps if args.max_steps > 0 else -1,
+            save_safetensors=True,
+            # I/O 최적화
+            dataloader_pin_memory=True,
+            dataloader_prefetch_factor=optimal_prefetch,
+            dataloader_persistent_workers=True,
+            dataloader_drop_last=True,
+            # 옵티마이저 및 정밀도
+            optim="adamw_torch_fused",
+            ddp_find_unused_parameters=False,
+            tf32=True,
+            # 배치 최적화
+            group_by_length=not getattr(args, 'packing', False),
+            max_grad_norm=1.0,
+            gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
+        )
+
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_dataset,
+            data_collator=data_collator,
+        )
+
+        if is_main_process:
+            logger.info(f"🏃 Starting training...")
+        trainer.train()
+
+        # 체크포인트 저장
+        checkpoint_path = f"{stage_output_dir}/checkpoint"
+        trainer.save_model(checkpoint_path)
+
+        # DDP barrier
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        # dtype 유지하며 저장 (rank 0만)
+        if is_main_process:
+            model_dtype = next(model.parameters()).dtype
+            if model_dtype in (torch.bfloat16, torch.float16):
+                logger.info(f"💾 Re-saving model in {model_dtype} format...")
+                model.save_pretrained(checkpoint_path, torch_dtype=model_dtype, safe_serialization=True)
+
+            if is_sequential:
+                logger.info(f"✅ Stage {idx+1} completed: {checkpoint_path}")
+            else:
+                logger.info(f"✅ Training completed: {checkpoint_path}")
+
+        # 다음 라운드를 위해 체크포인트 경로 업데이트 (Sequential mode)
+        if is_sequential:
+            current_checkpoint = checkpoint_path
+
+        # 메모리 해제
+        del model
+        del tokenized_dataset
+        del trainer
+        gc.collect()
+
+        try:
+            torch.cuda.empty_cache()
+        except:
+            pass
+
+        # DDP barrier
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+    # ============================================================================
+    # STEP 4: 최종 완료 메시지
+    # ============================================================================
+    if is_main_process:
+        logger.info("="*80)
+        logger.info("🎉 Training completed!")
+        if is_sequential:
+            logger.info(f"📁 Final model: {current_checkpoint}")
+            logger.info(f"📊 Trained on {len(tokenized_datasets_info)} datasets sequentially")
+        else:
+            logger.info(f"📁 Final model: {checkpoint_path}")
+        logger.info("="*80)
 
 
 # ============================================================================
@@ -2074,20 +1982,20 @@ def main():
         os.environ["DATASET_NUM_PROC"] = num_proc
         print(f"⚡ DATASET_NUM_PROC={num_proc} for data conversion")
         
-        # train_sequential 호출 (토큰화 부분만 실행됨)
-        print("🚀 Calling train_sequential for tokenization...")
-        
+        # train 호출 (토큰화 부분만 실행됨)
+        print("🚀 Calling train for tokenization...")
+
         # DDP 환경 변수 제거 (단일 프로세스로 실행)
         os.environ.pop("RANK", None)
         os.environ.pop("WORLD_SIZE", None)
         os.environ.pop("LOCAL_RANK", None)
         os.environ.pop("MASTER_ADDR", None)
         os.environ.pop("MASTER_PORT", None)
-        
+
         # tokenization만 수행하고 training은 스킵하도록 플래그 설정
         args._tokenize_only = True
-        
-        train_sequential(args)
+
+        train(args)
         
         print("="*80)
         print("✅ Tokenization completed! Now run torchrun for training.")
