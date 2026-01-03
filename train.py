@@ -412,6 +412,93 @@ def get_optimal_prefetch_factor(gpu_memory_gb: float = None, batch_size: int = 4
         return 2
 
 
+def load_files_parallel(file_paths: list, max_workers: int = 8) -> list:
+    """
+    여러 파일을 병렬로 로드
+
+    Args:
+        file_paths: 로드할 파일 경로 리스트
+        max_workers: 최대 worker 수
+
+    Returns:
+        로드된 Dataset 리스트
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datasets import Dataset
+
+    if not file_paths:
+        return []
+
+    # 단일 파일은 병렬 처리 불필요
+    if len(file_paths) == 1:
+        logger.info(f"  Loading file: {file_paths[0]}")
+        file_data = _load_single_file(file_paths[0])
+        logger.info(f"    → {len(file_data):,} samples")
+        return [Dataset.from_list(file_data)]
+
+    # 병렬 로딩
+    logger.info(f"🚀 Loading {len(file_paths)} files in parallel (workers={max_workers})...")
+    datasets_list = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 파일 로딩 작업 제출
+        future_to_file = {executor.submit(_load_single_file, f): f for f in file_paths}
+
+        # 완료된 작업 처리
+        for future in as_completed(future_to_file):
+            file_path = future_to_file[future]
+            try:
+                file_data = future.result()
+                logger.info(f"  ✓ Loaded {file_path}: {len(file_data):,} samples")
+                datasets_list.append(Dataset.from_list(file_data))
+            except Exception as e:
+                logger.error(f"  ✗ Failed to load {file_path}: {e}")
+
+    logger.info(f"✅ Loaded {len(datasets_list)}/{len(file_paths)} files successfully")
+    return datasets_list
+
+
+def get_cache_version_key(tokenizer, additional_info: str = "") -> str:
+    """
+    토크나이저 버전을 포함한 캐시 버전 키 생성
+
+    Args:
+        tokenizer: 토크나이저 객체
+        additional_info: 추가 정보 (예: 설정값)
+
+    Returns:
+        캐시 버전 키 (8자리 해시)
+    """
+    # 토크나이저 버전 정보 수집
+    version_info = []
+
+    # 1. 토크나이저 vocab 크기
+    version_info.append(f"vocab_{tokenizer.vocab_size}")
+
+    # 2. 토크나이저 타입
+    tokenizer_type = type(tokenizer).__name__
+    version_info.append(f"type_{tokenizer_type}")
+
+    # 3. 특수 토큰
+    special_tokens = {
+        'bos': tokenizer.bos_token_id,
+        'eos': tokenizer.eos_token_id,
+        'pad': tokenizer.pad_token_id,
+        'unk': tokenizer.unk_token_id,
+    }
+    version_info.append(f"tokens_{special_tokens}")
+
+    # 4. 추가 정보
+    if additional_info:
+        version_info.append(additional_info)
+
+    # 해시 생성
+    version_string = "_".join(str(v) for v in version_info)
+    cache_version = hashlib.md5(version_string.encode()).hexdigest()[:8]
+
+    return cache_version
+
+
 # ============================================================================
 # Sequence Concatenation for Pretraining
 # ============================================================================
@@ -541,8 +628,12 @@ def tokenize_all_datasets(
                     text_column=args.text_column,
                 )
 
-            # 캐시 경로 설정
-            dataset_hash = hashlib.md5(f"{src_name}_seq_{idx}".encode()).hexdigest()[:16]
+            # 캐시 경로 설정 (토크나이저 버전 포함)
+            cache_version = get_cache_version_key(
+                tokenizer,
+                additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
+            )
+            dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
             tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
             tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
 
@@ -607,7 +698,11 @@ def tokenize_all_datasets(
         import time as time_module
         last_src_name = all_sources[-1][1]
         last_idx = len(all_sources) - 1
-        dataset_hash = hashlib.md5(f"{last_src_name}_seq_{last_idx}".encode()).hexdigest()[:16]
+        cache_version = get_cache_version_key(
+            tokenizer,
+            additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{last_idx}"
+        )
+        dataset_hash = hashlib.md5(f"{last_src_name}_{cache_version}".encode()).hexdigest()[:16]
         last_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
 
         max_wait = 7200
@@ -624,7 +719,11 @@ def tokenize_all_datasets(
         logger.info(f"[Rank {rank}] ✅ Loading tokenized datasets info...")
 
         for idx, (src_type, src_name) in enumerate(all_sources):
-            dataset_hash = hashlib.md5(f"{src_name}_seq_{idx}".encode()).hexdigest()[:16]
+            cache_version = get_cache_version_key(
+                tokenizer,
+                additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
+            )
+            dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
             tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
 
             tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
@@ -790,10 +889,18 @@ def tokenize_non_sequential_dataset(tokenizer, args):
     log_with_rank(f"✅ Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples", rank, is_main_process)
 
     # ----------------------------------------------------------------
-    # 2. 토크나이징 캐시 경로 설정
+    # 2. 토크나이징 캐시 경로 설정 (토크나이저 버전 포함)
     # ----------------------------------------------------------------
     dataset_names_str = "_".join(args.dataset) if args.dataset else "local"
-    tokenized_cache_path = create_cache_path(dataset_names_str, "_tokenized")
+
+    # 토크나이저 버전을 포함한 캐시 키 생성
+    cache_version = get_cache_version_key(
+        tokenizer,
+        additional_info=f"packing_{getattr(args, 'packing', False)}_maxlen_{args.max_seq_length}"
+    )
+    dataset_cache_key = f"{dataset_names_str}_{cache_version}"
+
+    tokenized_cache_path = create_cache_path(dataset_cache_key, "_tokenized")
     tokenized_marker = Path(str(tokenized_cache_path).replace("_tokenized", ".tokenized.marker"))
 
     # ----------------------------------------------------------------
@@ -1149,16 +1256,14 @@ def load_pretrain_dataset(
     
     datasets_list = []
 
-    # 로컬 파일 로드
+    # 로컬 파일 로드 (병렬 처리)
     if train_files:
         if isinstance(train_files, str):
             train_files = [train_files]
-        
-        for file_path in train_files:
-            logger.info(f"  Loading file: {file_path}")
-            file_data = _load_single_file(file_path)
-            logger.info(f"    → {len(file_data):,} samples")
-            datasets_list.append(Dataset.from_list(file_data))
+
+        # 파일 병렬 로딩 사용
+        loaded_datasets = load_files_parallel(train_files, max_workers=8)
+        datasets_list.extend(loaded_datasets)
     
     # HuggingFace 데이터셋 로드 (Dataset 객체를 그대로 사용)
     if dataset_names:
