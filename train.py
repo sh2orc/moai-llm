@@ -1277,6 +1277,82 @@ def prepare_data_sources(args) -> list:
     return all_sources
 
 
+def calculate_cache_paths(source: tuple, tokenizer, args, idx: int) -> tuple:
+    """
+    캐시 경로 계산 (모든 rank에서 동일하게 계산)
+
+    Args:
+        source: ("hf", "dataset_name") 또는 ("file", "path")
+        tokenizer: 토크나이저
+        args: 학습 인자
+        idx: 소스 인덱스 (캐시 키 생성용)
+
+    Returns:
+        (src_name, tokenized_cache_path, tokenized_marker)
+    """
+    src_type, src_name = source
+    cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+
+    cache_version = get_cache_version_key(
+        tokenizer,
+        additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
+    )
+    dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
+    tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
+    tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+
+    return src_name, tokenized_cache_path, tokenized_marker
+
+
+def load_dataset_info_from_cache(
+    source: tuple,
+    tokenizer,
+    args,
+    idx: int,
+) -> dict:
+    """
+    캐시에서 데이터셋 정보 로드 (Non-main ranks용)
+
+    Args:
+        source: ("hf", "dataset_name") 또는 ("file", "path")
+        tokenizer: 토크나이저
+        args: 학습 인자
+        idx: 소스 인덱스
+
+    Returns:
+        {'name': str, 'cache_path': Path, 'num_samples': int}
+    """
+    import gc
+    from datasets import Dataset as HFDataset
+
+    ddp_info = get_ddp_info()
+    rank = ddp_info['rank']
+
+    # 캐시 경로 계산
+    src_name, tokenized_cache_path, tokenized_marker = calculate_cache_paths(
+        source, tokenizer, args, idx
+    )
+
+    # 마커 파일 대기
+    logger.info(f"[Rank {rank}] Waiting for tokenization to complete...")
+    if not wait_for_marker(tokenized_marker, TOKENIZATION_TIMEOUT, CHECK_INTERVAL, rank):
+        raise TimeoutError(f"Rank {rank}: Tokenization timeout after {TOKENIZATION_TIMEOUT}s")
+
+    logger.info(f"[Rank {rank}] ✅ Tokenization completed, loading info...")
+
+    # 샘플 수 확인을 위해 dataset 로드
+    tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+    num_samples = len(tokenized_dataset)
+    del tokenized_dataset
+    gc.collect()
+
+    return {
+        'name': src_name,
+        'cache_path': tokenized_cache_path,
+        'num_samples': num_samples,
+    }
+
+
 def tokenize_single_source(
     source: tuple,
     tokenizer,
@@ -1284,7 +1360,7 @@ def tokenize_single_source(
     idx: int,
 ) -> dict:
     """
-    단일 데이터 소스 토크나이징 (Rank 0만 실행)
+    단일 데이터 소스 토크나이징 (Rank 0 전용)
 
     Args:
         source: ("hf", "dataset_name") 또는 ("file", "path")
@@ -1298,116 +1374,88 @@ def tokenize_single_source(
     import gc
     from datasets import Dataset as HFDataset
 
-    ddp_info = get_ddp_info()
-    rank = ddp_info['rank']
-    is_main_process = ddp_info['is_main_process']
-
     src_type, src_name = source
-    cache_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 
-    # 캐시 경로 설정 (모든 rank에서 동일하게 계산)
-    cache_version = get_cache_version_key(
-        tokenizer,
-        additional_info=f"packing_{args.packing}_maxlen_{args.max_seq_length}_seq_{idx}"
+    # 캐시 경로 계산
+    src_name, tokenized_cache_path, tokenized_marker = calculate_cache_paths(
+        source, tokenizer, args, idx
     )
-    dataset_hash = hashlib.md5(f"{src_name}_{cache_version}".encode()).hexdigest()[:16]
-    tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
-    tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
 
-    if is_main_process:
-        logger.info(f"📦 [{idx+1}] Dataset: {src_name}")
+    logger.info(f"📦 [{idx+1}] Dataset: {src_name}")
 
-        # 캐시 확인
-        if tokenized_cache_path.exists() and tokenized_marker.exists():
-            logger.info(f"  ✅ Loading cached tokenized dataset")
-            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-            num_samples = len(tokenized_dataset)
-            logger.info(f"  ✅ Loaded {num_samples:,} samples from cache")
-        else:
-            # 데이터셋 로드
-            logger.info(f"  📚 Loading dataset...")
-            if src_type == "hf":
-                dataset, text_column = load_pretrain_dataset(
-                    dataset_names=[src_name],
-                    dataset_config=args.dataset_config if idx == 0 else None,
-                    train_files=None,
-                    text_column=args.text_column,
-                )
-            else:
-                dataset, text_column = load_pretrain_dataset(
-                    dataset_names=None,
-                    dataset_config=None,
-                    train_files=[src_name],
-                    text_column=args.text_column,
-                )
-
-            # 토크나이징
-            logger.info(f"  🔤 Tokenizing dataset...")
-            tokenized_ds = tokenize_dataset(
-                dataset=dataset["train"],
-                tokenizer=tokenizer,
-                text_column=text_column,
-                max_seq_length=args.max_seq_length,
-                packing=args.packing,
-            )
-
-            # Packing (선택적)
-            if args.packing:
-                logger.info(f"  📦 Packing sequences...")
-                tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
-                del tokenized_ds
-                gc.collect()
-
-                concatenated_chunks = concatenate_sequences(
-                    tokenized_sequences=tokenized_list,
-                    max_seq_length=args.max_seq_length,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-                del tokenized_list
-                gc.collect()
-
-                tokenized_dataset = HFDataset.from_list(concatenated_chunks)
-                del concatenated_chunks
-                gc.collect()
-            else:
-                tokenized_dataset = tokenized_ds
-
-            # 저장
-            logger.info(f"  💾 Saving tokenized dataset...")
-            num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
-            tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
-            tokenized_marker.touch()
-            num_samples = len(tokenized_dataset)
-            logger.info(f"  ✅ Tokenized: {num_samples:,} samples (shards={num_shards})")
-
-            # 메모리 해제
-            del dataset
-            del tokenized_dataset
-            gc.collect()
-
-        return {
-            'name': src_name,
-            'cache_path': tokenized_cache_path,
-            'num_samples': num_samples,
-        }
-    else:
-        # 다른 rank는 마커 파일 대기
-        logger.info(f"[Rank {rank}] Waiting for tokenization to complete...")
-        if not wait_for_marker(tokenized_marker, TOKENIZATION_TIMEOUT, CHECK_INTERVAL, rank):
-            raise TimeoutError(f"Rank {rank}: Tokenization timeout after {TOKENIZATION_TIMEOUT}s")
-
-        logger.info(f"[Rank {rank}] ✅ Tokenization completed, loading info...")
-        # 샘플 수 확인을 위해 dataset 로드
+    # 캐시 확인
+    if tokenized_cache_path.exists() and tokenized_marker.exists():
+        logger.info(f"  ✅ Loading cached tokenized dataset")
         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
         num_samples = len(tokenized_dataset)
+        logger.info(f"  ✅ Loaded {num_samples:,} samples from cache")
+    else:
+        # 데이터셋 로드
+        logger.info(f"  📚 Loading dataset...")
+        if src_type == "hf":
+            dataset, text_column = load_pretrain_dataset(
+                dataset_names=[src_name],
+                dataset_config=args.dataset_config if idx == 0 else None,
+                train_files=None,
+                text_column=args.text_column,
+            )
+        else:
+            dataset, text_column = load_pretrain_dataset(
+                dataset_names=None,
+                dataset_config=None,
+                train_files=[src_name],
+                text_column=args.text_column,
+            )
+
+        # 토크나이징
+        logger.info(f"  🔤 Tokenizing dataset...")
+        tokenized_ds = tokenize_dataset(
+            dataset=dataset["train"],
+            tokenizer=tokenizer,
+            text_column=text_column,
+            max_seq_length=args.max_seq_length,
+            packing=args.packing,
+        )
+
+        # Packing (선택적)
+        if args.packing:
+            logger.info(f"  📦 Packing sequences...")
+            tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
+            del tokenized_ds
+            gc.collect()
+
+            concatenated_chunks = concatenate_sequences(
+                tokenized_sequences=tokenized_list,
+                max_seq_length=args.max_seq_length,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+            del tokenized_list
+            gc.collect()
+
+            tokenized_dataset = HFDataset.from_list(concatenated_chunks)
+            del concatenated_chunks
+            gc.collect()
+        else:
+            tokenized_dataset = tokenized_ds
+
+        # 저장
+        logger.info(f"  💾 Saving tokenized dataset...")
+        num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
+        tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
+        tokenized_marker.touch()
+        num_samples = len(tokenized_dataset)
+        logger.info(f"  ✅ Tokenized: {num_samples:,} samples (shards={num_shards})")
+
+        # 메모리 해제
+        del dataset
         del tokenized_dataset
         gc.collect()
 
-        return {
-            'name': src_name,
-            'cache_path': tokenized_cache_path,
-            'num_samples': num_samples,
-        }
+    return {
+        'name': src_name,
+        'cache_path': tokenized_cache_path,
+        'num_samples': num_samples,
+    }
 
 
 # ============================================================================
@@ -1767,8 +1815,16 @@ def main():
 
         # 모든 소스 토크나이징
         for idx, source in enumerate(all_sources):
-            dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+            # Rank 0만 토크나이징 실행
+            if is_main_process:
+                dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+
+            # 모든 rank 동기화
             ddp_barrier()
+
+            # Non-main ranks는 캐시에서 정보 로드
+            if not is_main_process:
+                dataset_info = load_dataset_info_from_cache(source, tokenizer, args, idx)
 
         if is_main_process:
             logger.info("="*80)
@@ -1814,7 +1870,7 @@ def main():
         # 1. 토크나이징 (Rank 0만 실행)
         if is_main_process:
             logger.info("🔤 Step 1: Tokenizing...")
-        dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+            dataset_info = tokenize_single_source(source, tokenizer, args, idx)
 
         # 2. Barrier (모든 rank 동기화)
         if is_main_process:
@@ -1823,9 +1879,13 @@ def main():
         if is_main_process:
             logger.info("✅ All ranks synchronized!")
 
-        # 3. 학습 (모든 rank)
+        # 3. Non-main ranks는 캐시에서 정보 로드
+        if not is_main_process:
+            dataset_info = load_dataset_info_from_cache(source, tokenizer, args, idx)
+
+        # 4. 학습 (모든 rank)
         if is_main_process:
-            logger.info("🏋️ Step 3: Training...")
+            logger.info("🏋️ Step 4: Training...")
         checkpoint_path = train_single_dataset(
             args=args,
             dataset_info=dataset_info,
