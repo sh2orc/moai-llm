@@ -20,7 +20,7 @@ class MoaiSwiGLU(nn.Module):
     SwiGLU(x, W, V, b, c) = Swish(xW + b) ⊗ (xV + c)
     where Swish(x) = x * sigmoid(x) and ⊗ is element-wise product.
 
-    Note: This implementation uses the no-bias variant (Qwen3 style).
+    Note: This implementation uses the no-bias variant.
 
     Args:
         hidden_size (int): Input dimension

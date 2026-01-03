@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "moai-llm"
 version = "0.1.0"
-description = "A 3B parameter LLM based on Qwen3 architecture with state-of-the-art components"
+description = "A 3B parameter LLM with state-of-the-art components"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "MOAI Team"}
 ]
-keywords = ["llm", "transformer", "qwen3", "pytorch", "deep-learning"]
+keywords = ["llm", "transformer", "pytorch", "deep-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",

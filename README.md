@@ -1,6 +1,6 @@
 # MOAI-LLM: A 3B Parameter Language Model
 
-A state-of-the-art 3B parameter language model based on Qwen3 architecture, featuring cutting-edge optimization techniques from 2024-2025 research.
+A state-of-the-art 3B parameter language model featuring cutting-edge optimization techniques from 2024-2025 research.
 
 ## Features
 
@@ -10,7 +10,7 @@ A state-of-the-art 3B parameter language model based on Qwen3 architecture, feat
 - **SwiGLU Activation**: Inlined forward pass for memory efficiency
 - **Fused RMSNorm**: Uses flash-attn's CUDA kernel when available (~30-50% faster)
 - **RoPE with YaRN**: Context extension up to 128K+ tokens
-- **QK-Norm**: Training stability (Qwen3 feature)
+- **QK-Norm**: Training stability
 
 ### Training Optimizations
 - **Fused AdamW Optimizer**: `adamw_torch_fused` for 2x faster optimizer step
@@ -720,7 +720,7 @@ norm = MoaiRMSNorm(hidden_size=3840)
 - **Parameters per layer**: ~147M
 
 ### Position Encoding (RoPE + YaRN)
-- **Base Frequency**: 1,000,000 (Qwen3 standard)
+- **Base Frequency**: 1,000,000
 - **Scaling**: YaRN for efficient context extension
 - **Context Length**: 32K (base) → 128K+ (extended)
 - **Training Efficiency**: <0.1% of original pretraining data for extension

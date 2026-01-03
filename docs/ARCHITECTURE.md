@@ -1,6 +1,6 @@
 # 🏗️ MOAI-LLM 아키텍처 가이드
 
-**Qwen3 기반 3B 파라미터 언어모델의 기술 문서**
+**3B 파라미터 언어모델의 기술 문서**
 
 ---
 
@@ -16,11 +16,11 @@
 
 ## 1. 아키텍처 개요
 
-### 1.1 MOAI-LLM vs Qwen3
+### 1.1 MOAI-LLM 아키텍처
 
-MOAI-LLM은 **Qwen3 아키텍처를 3B 파라미터로 조정**한 모델입니다.
+MOAI-LLM은 **3B 파라미터 최적화 모델**입니다.
 
-| 설정 | MOAI-LLM-3B | Qwen3-8B | 비고 |
+| 설정 | MOAI-LLM-3B | 참고 (8B) | 비고 |
 |------|-------------|----------|------|
 | **파라미터** | 3B | 8B | 모델 크기 조정 |
 | **Layers** | 28 | 36 | 3B 설계 |
@@ -52,17 +52,17 @@ MOAI-LLM은 **Qwen3 아키텍처를 3B 파라미터로 조정**한 모델입니�
 
 ### 1.3 구현 완성도
 
-| 컴포넌트 | 구현 상태 | Qwen3 호환성 |
-|---------|----------|-------------|
-| 토크나이저 (SentencePiece BPE) | ✅ 완전 구현 | 100% |
-| Token Embedding | ✅ 완전 구현 | 100% |
-| Position Embedding (RoPE) | ✅ 완전 구현 | 100% |
-| QK-Normalization | ✅ 완전 구현 | 100% |
-| Transformer (Pre-LN) | ✅ 완전 구현 | 100% |
-| GQA (Grouped Query Attention) | ✅ 완전 구현 | 100% |
-| Flash Attention | ✅ 완전 구현 | 100% |
-| RMSNorm | ✅ 완전 구현 | 100% |
-| SwiGLU Activation | ✅ 완전 구현 | 100% |
+| 컴포넌트 | 구현 상태 |
+|---------|----------|
+| 토크나이저 (SentencePiece BPE) | ✅ 완전 구현 |
+| Token Embedding | ✅ 완전 구현 |
+| Position Embedding (RoPE) | ✅ 완전 구현 |
+| QK-Normalization | ✅ 완전 구현 |
+| Transformer (Pre-LN) | ✅ 완전 구현 |
+| GQA (Grouped Query Attention) | ✅ 완전 구현 |
+| Flash Attention | ✅ 완전 구현 |
+| RMSNorm | ✅ 완전 구현 |
+| SwiGLU Activation | ✅ 완전 구현 |
 
 **전체 구현 완성도: 95%** ✅
 
@@ -76,7 +76,7 @@ MOAI-LLM은 **Qwen3 아키텍처를 3B 파라미터로 조정**한 모델입니�
 
 ```python
 self.embed_tokens = nn.Embedding(
-    vocab_size=128000,      # Qwen3: 151,665 (메모리 최적화)
+    vocab_size=128000,      # 메모리 최적화
     hidden_size=3840,        # 3B 모델 크기
     padding_idx=0,          # PAD token
 )
@@ -102,8 +102,8 @@ memory_bf16 = 491M × 2 bytes = 982 MB
 ```python
 self.rotary_emb = MoaiRotaryEmbedding(
     dim=128,                         # head_dim (3840 / 30)
-    max_position_embeddings=32768,   # Qwen3: 32K tokens
-    base=1000000.0,                  # Qwen3: 1M (긴 컨텍스트)
+    max_position_embeddings=32768,   # 32K tokens
+    base=1000000.0,                  # 1M (긴 컨텍스트)
     scaling_config=None,             # YaRN/NTK 지원
 )
 ```
@@ -115,7 +115,7 @@ self.rotary_emb = MoaiRotaryEmbedding(
 
 **rope_theta=1M의 효과**:
 - 기존 RoPE (theta=10K): ~8K tokens에 최적화
-- Qwen3 RoPE (theta=1M): ~32K tokens까지 안정적
+- 최적화된 RoPE (theta=1M): ~32K tokens까지 안정적
 - **100배 큰 theta** → 긴 컨텍스트에서 위치 정보 유지
 
 **RoPE 확장 기법 (선택적)**:
@@ -139,7 +139,7 @@ if use_qk_norm:
 **효과**:
 - ✅ 학습 안정화 (Gradient 폭발 방지)
 - ✅ Attention score 정규화
-- ✅ Qwen3의 핵심 안정화 기법
+- ✅ 핵심 안정화 기법
 
 **동작 방식**:
 ```python
@@ -161,13 +161,12 @@ attention_scores = Q_normalized @ K_normalized.T
 self.lm_head = nn.Linear(
     in_features=3840,       # hidden_size
     out_features=128000,    # vocab_size
-    bias=False,             # Qwen3: No bias
+    bias=False,             # No bias
 )
 ```
 
 **Tied Embeddings: False**
 - Input embedding (`embed_tokens`)과 Output embedding (`lm_head`)이 **분리됨**
-- Qwen3과 동일한 설정
 - 메모리는 2배 사용하지만, 표현력 향상
 
 **메모리 계산**:
@@ -192,7 +191,7 @@ total = 491M params (982 MB ≈ 1GB)
 **파일**: `moai_llm/modeling/transformer.py`
 
 ```python
-# Pre-LayerNorm 아키텍처 (Qwen3 동일)
+# Pre-LayerNorm 아키텍처
 class MoaiDecoderLayer(nn.Module):
     def forward(self, x):
         # 1. Self-Attention with residual
@@ -241,8 +240,7 @@ GQA_ratio = 7:1                # 7개 Q가 1개 KV 공유
 2. **추론 속도 향상**: 메모리 대역폭 감소
 3. **성능 유지**: MHA와 유사한 품질
 
-**Qwen3과의 차이**:
-- Qwen3: 1:1 비율 (32:32, 보수적)
+**GQA 비율**:
 - MOAI: 7:1 비율 (28:4, 공격적, 메모리 효율)
 
 ---
@@ -289,11 +287,11 @@ class SwiGLU(nn.Module):
 **설정**:
 - hidden_size: 3,840
 - intermediate_size: 10,240 (2.67x, GLU용)
-- activation: **SwiGLU** (Qwen3는 SiLU)
+- activation: **SwiGLU**
 - bias: False
 
 **SwiGLU vs SiLU**:
-| Feature | SwiGLU (MOAI) | SiLU (Qwen3) |
+| Feature | SwiGLU (MOAI) | SiLU |
 |---------|---------------|--------------|
 | 파라미터 | 2× up/gate projections | 1× projection |
 | 성능 | 더 강력 (GPT-3, LLaMA) | 단순 |
@@ -320,7 +318,7 @@ class MoaiRMSNorm(nn.Module):
 ```
 
 **설정**:
-- eps: 1e-6 (Qwen3 동일)
+- eps: 1e-6
 - FP32 계산 (정확도 유지)
 
 **RMSNorm vs LayerNorm**:
@@ -400,7 +398,7 @@ memory_increase = 170M × 2 = 340 MB
 effective_context = ~8K tokens
 position_encoding = 안정적 범위 내
 
-# rope_theta=1,000,000 (Qwen3 기준)
+# rope_theta=1,000,000
 effective_context = ~32K tokens (4배 증가)
 position_encoding = 100배 큰 theta로 긴 거리 유지
 ```
@@ -509,10 +507,10 @@ Sequence length: 512
 
 ## 6. 체크리스트
 
-MOAI-LLM이 Qwen3 아키텍처를 완전히 구현했는지 확인:
+MOAI-LLM 아키텍처 구현 확인:
 
 - [x] SentencePiece BPE 토크나이저
-- [x] Qwen3 special tokens (`<|im_start|>`, `<|im_end|>`)
+- [x] Special tokens (`<|im_start|>`, `<|im_end|>`)
 - [x] Token embedding (128K vocab)
 - [x] RoPE (theta=1M, max_pos=32K)
 - [x] QK-Normalization
@@ -559,10 +557,10 @@ MOAI-LLM이 Qwen3 아키텍처를 완전히 구현했는지 확인:
 
 ## 🎉 결론
 
-MOAI-LLM은 **Qwen3의 모든 핵심 아키텍처를 완전히 구현**했습니다!
+MOAI-LLM은 **최신 아키텍처를 완전히 구현**했습니다!
 
 ### 핵심 강점:
-1. ✅ Qwen3과 동일한 임베딩 (rope_theta=1M, max_pos=32K)
+1. ✅ 최적화된 임베딩 (rope_theta=1M, max_pos=32K)
 2. ✅ 최신 안정화 기법 (QK-Norm, RMSNorm)
 3. ✅ 메모리 효율적 (GQA 7:1, Flash Attention)
 4. ✅ 확장 가능 (YaRN으로 128K+ 컨텍스트)

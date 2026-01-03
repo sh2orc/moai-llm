@@ -35,7 +35,7 @@ class MoaiConfig(PretrainedConfig):
         attention_dropout (float): Dropout for attention (default: 0.0)
         initializer_range (float): Std for weight initialization (default: 0.02)
         use_cache (bool): Whether to use KV cache during generation (default: True)
-        attention_bias (bool): Whether to use bias in attention projection (default: False, Qwen3 style)
+        attention_bias (bool): Whether to use bias in attention projection (default: False)
         mlp_bias (bool): Whether to use bias in MLP (default: False)
     """
 
@@ -49,18 +49,18 @@ class MoaiConfig(PretrainedConfig):
         num_hidden_layers: int = 28,
         num_attention_heads: int = 30,
         num_key_value_heads: int = 5,
-        max_position_embeddings: int = 32768,  # Qwen3: 40960, 우리는 32K로 시작
-        rope_theta: float = 1000000.0,  # Qwen3 기본값
+        max_position_embeddings: int = 32768,
+        rope_theta: float = 1000000.0,
         rope_scaling: Optional[dict] = None,
-        rms_norm_eps: float = 1e-6,  # Qwen3와 동일
-        use_qk_norm: bool = True,  # Qwen3 안정화 기법
-        hidden_act: str = "swiglu",  # SwiGLU (Qwen3은 silu)
-        tie_word_embeddings: bool = False,  # Qwen3: False
-        attention_dropout: float = 0.0,  # Qwen3: 0.0
-        initializer_range: float = 0.02,  # Qwen3와 동일
+        rms_norm_eps: float = 1e-6,
+        use_qk_norm: bool = True,
+        hidden_act: str = "swiglu",
+        tie_word_embeddings: bool = False,
+        attention_dropout: float = 0.0,
+        initializer_range: float = 0.02,
         use_cache: bool = True,
-        attention_bias: bool = False,  # Qwen3: False (no bias)
-        mlp_bias: bool = False,  # Qwen3 스타일 (no bias)
+        attention_bias: bool = False,
+        mlp_bias: bool = False,
         pad_token_id: int = 0,
         bos_token_id: int = 1,
         eos_token_id: int = 2,
@@ -141,9 +141,9 @@ class MoaiConfig(PretrainedConfig):
 # Predefined configurations
 class MoaiConfig3B(MoaiConfig):
     """
-    3B parameter configuration optimized for Qwen3 architecture.
+    3B parameter configuration.
 
-    - Qwen3-style embeddings (rope_theta=1M, max_seq=32K)
+    - RoPE embeddings (rope_theta=1M, max_seq=32K)
     - GQA with 6:1 ratio (30 Q heads, 5 KV heads)
     - QK-Norm for training stability
     - No bias in attention/MLP (modern LLM standard)
@@ -156,8 +156,8 @@ class MoaiConfig3B(MoaiConfig):
             num_hidden_layers=28,
             num_attention_heads=30,
             num_key_value_heads=5,
-            max_position_embeddings=32768,  # Qwen3 long context
-            rope_theta=1000000.0,  # Qwen3 default
+            max_position_embeddings=32768,
+            rope_theta=1000000.0,
             **kwargs
         )
 

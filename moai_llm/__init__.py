@@ -1,5 +1,5 @@
 """
-MOAI-LLM: A 3B parameter language model based on Qwen3 architecture.
+MOAI-LLM: A 3B parameter language model.
 
 This package provides a state-of-the-art transformer implementation with:
 - Grouped Query Attention (GQA) with Flash Attention 3

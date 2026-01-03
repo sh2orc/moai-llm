@@ -52,7 +52,7 @@ class MoaiRotaryEmbedding(nn.Module):
         self.scaling_config = scaling_config
         self.scaling_type = scaling_config.get("type", None) if scaling_config else None
 
-        # Compute inverse frequencies in FP32 for numerical precision (Qwen3 style)
+        # Compute inverse frequencies in FP32 for numerical precision
         inv_freq = self._compute_inv_freq(device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 

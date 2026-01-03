@@ -320,7 +320,7 @@ python train.py \
 |------|------|
 | `USER_GUIDE.md` | 완전한 학습 가이드 (환경 설정부터 배포까지) |
 | `DATASETS.md` | 데이터셋 선택 및 설정 가이드 |
-| `ARCHITECTURE.md` | Qwen3 아키텍처 상세 설명 |
+| `ARCHITECTURE.md` | 아키텍처 상세 설명 |
 | `TOKENIZER_UPDATE_GUIDE.md` | 토크나이저 업데이트 방법 |
 | `examples/bccard_example.md` | BCCard 데이터셋 완전 예제 |
 

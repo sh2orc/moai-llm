@@ -59,7 +59,7 @@ class MoaiAttention(nn.Module):
 
     Features:
     - GQA for efficient KV cache
-    - QK-Norm for training stability (Qwen3)
+    - QK-Norm for training stability
     - Flash Attention for memory-efficient computation
     - RoPE for position encoding
 
@@ -112,7 +112,7 @@ class MoaiAttention(nn.Module):
             bias=config.attention_bias,
         )
 
-        # QK-Norm for training stability (Qwen3 feature)
+        # QK-Norm for training stability
         if self.use_qk_norm:
             self.q_norm = MoaiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
             self.k_norm = MoaiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
@@ -164,7 +164,7 @@ class MoaiAttention(nn.Module):
         key_states = key_states.view(bsz, q_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Apply QK-Norm if enabled (Qwen3 feature for stability)
+        # Apply QK-Norm if enabled for stability
         if self.use_qk_norm:
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)

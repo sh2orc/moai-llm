@@ -1,4 +1,4 @@
-# 🚀 MOAI-LLM 완전 구현 가이드 (Qwen3 아키텍처)
+# 🚀 MOAI-LLM 완전 구현 가이드
 
 **3B 파라미터 언어모델을 HuggingFace Datasets로 처음부터 끝까지 구현하는 완전 가이드**
 
@@ -21,11 +21,11 @@
 
 ### 1.1 MOAI-LLM이란?
 
-**MOAI-LLM**은 Qwen3 아키텍처를 기반으로 한 3B 파라미터 언어모델입니다.
+**MOAI-LLM**은 3B 파라미터 언어모델입니다.
 
 #### 핵심 특징:
 
-- ✅ **Qwen3 아키텍처**: 최신 LLM 기술 완전 구현
+- ✅ **최신 아키텍처**: 최신 LLM 기술 완전 구현
 - ✅ **HuggingFace 통합**: 모든 단계에서 datasets 사용
 - ✅ **긴 컨텍스트**: 32K tokens (YaRN으로 128K+ 확장 가능)
 - ✅ **효율적**: GQA (7:1), Flash Attention 지원
@@ -996,7 +996,7 @@ python chat.py --model_path outputs/sft-finance/final_model
 ### 10.1 문서
 
 - **QUICKSTART.md**: 10분 빠른 시작
-- **QWEN3_ARCHITECTURE.md**: Qwen3 아키텍처 상세
+- **ARCHITECTURE.md**: 아키텍처 상세
 - **EMBEDDING_GUIDE.md**: 임베딩 가이드
 - **TOKENIZER_UPDATE_GUIDE.md**: 토크나이저 업데이트
 - **DATASET_CONFIGS.md**: 데이터셋 Config 가이드
@@ -1012,7 +1012,7 @@ moai-llm/
 ├── test_inference.py        # 추론 테스트
 ├── check_dataset.py         # 데이터셋 정보 확인
 └── configs/
-    └── model_config.json    # Qwen3 설정
+    └── model_config.json    # 모델 설정
 ```
 
 ### 10.3 HuggingFace Datasets
@@ -1046,7 +1046,7 @@ moai-llm/
 **핵심 요약**:
 1. ✅ **모든 단계가 HuggingFace datasets 기반**
 2. ✅ **데이터 다운로드/변환 자동화**
-3. ✅ **Qwen3 최신 아키텍처**
+3. ✅ **최신 아키텍처**
 4. ✅ **토크나이저 → 사전학습 → SFT → 추론 전체 파이프라인**
 
 **다음 단계**:
