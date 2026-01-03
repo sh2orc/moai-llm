@@ -579,11 +579,11 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    datasets.map() 우회, Rust 병렬화 직접 활용
+    순수 Rust tokenizer 사용 (Python GIL 완전 우회)
 
     Args:
         dataset: HuggingFace Dataset 객체
-        tokenizer: 토크나이저
+        tokenizer: transformers 토크나이저 (내부에서 Rust 토크나이저 추출)
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
         packing: True면 truncation 없이 토큰화
@@ -592,16 +592,30 @@ def tokenize_dataset(
     Returns:
         토큰화된 Dataset 객체
     """
+    from tokenizers import Tokenizer
+
     total_samples = len(dataset)
     batch_size = 20000  # Rust 병렬화 최적 배치 크기
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Method: Direct Rust parallelism (bypass datasets.map)")
+    logger.info(f"   Method: Pure Rust tokenizer (zero Python overhead)")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
     logger.info(f"   TOKENIZERS_PARALLELISM: {os.environ.get('TOKENIZERS_PARALLELISM', 'not set')}")
     logger.info(f"   RAYON_NUM_THREADS: {os.environ.get('RAYON_NUM_THREADS', 'auto')}")
+
+    # Rust tokenizer 추출 (transformers wrapper 우회)
+    if hasattr(tokenizer, '_tokenizer'):
+        # Fast Tokenizer의 내부 Rust tokenizer 추출
+        rust_tokenizer = tokenizer._tokenizer
+        logger.info(f"   Using native Rust tokenizer (extracted from transformers)")
+    elif hasattr(tokenizer, 'backend_tokenizer'):
+        rust_tokenizer = tokenizer.backend_tokenizer
+        logger.info(f"   Using native Rust tokenizer (backend)")
+    else:
+        logger.warning(f"   ⚠️  Could not extract Rust tokenizer, falling back to transformers wrapper")
+        rust_tokenizer = None
 
     start_time = time.time()
 
@@ -618,26 +632,40 @@ def tokenize_dataset(
         batch_dataset = dataset.select(range(i, end_idx))
         batch_texts = batch_dataset[text_column]
 
-        # Arrow 배열을 Python list로 변환
+        # Arrow 배열을 list로 변환 (필수)
         if hasattr(batch_texts, 'to_pylist'):
             batch_texts = batch_texts.to_pylist()
         elif not isinstance(batch_texts, list):
             batch_texts = list(batch_texts)
 
-        # Rust tokenizer가 내부적으로 병렬 처리
-        encoded = tokenizer(
-            batch_texts,
-            truncation=not packing,
-            max_length=max_seq_length if not packing else None,
-            padding=False,
-            add_special_tokens=True,
-            return_tensors=None
-        )
+        # Rust tokenizer 직접 사용 (GIL 우회)
+        if rust_tokenizer is not None:
+            # 순수 Rust encode_batch() 사용
+            if packing:
+                # Truncation 없이 인코딩
+                encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
+                batch_input_ids = [enc.ids for enc in encodings]
+            else:
+                # Truncation 적용
+                rust_tokenizer.enable_truncation(max_seq_length)
+                encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
+                batch_input_ids = [enc.ids for enc in encodings]
+                rust_tokenizer.no_truncation()  # 원상복구
+        else:
+            # Fallback: transformers wrapper 사용
+            encoded = tokenizer(
+                batch_texts,
+                truncation=not packing,
+                max_length=max_seq_length if not packing else None,
+                padding=False,
+                add_special_tokens=True,
+                return_tensors=None
+            )
+            batch_input_ids = encoded['input_ids']
 
-        all_input_ids.extend(encoded['input_ids'])
+        all_input_ids.extend(batch_input_ids)
 
         # 메모리 해제
-        del encoded
         del batch_texts
         del batch_dataset
         gc.collect()
@@ -648,8 +676,7 @@ def tokenize_dataset(
             speed = end_idx / elapsed if elapsed > 0 else 0
             logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {end_idx:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
 
-
-    # 3. Dataset으로 변환
+    # Dataset으로 변환
     logger.info(f"   Converting to Dataset format...")
     tokenized = HFDataset.from_dict({'input_ids': all_input_ids})
     del all_input_ids
