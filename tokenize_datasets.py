@@ -208,9 +208,11 @@ def main():
     # ========================================================================
     # STEP 3: 토크나이징
     # ========================================================================
-    # TOKENIZERS_PARALLELISM 설정
+    # TOKENIZERS_PARALLELISM 강제 설정 (Rust 내부 병렬 처리)
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
     logger.info("🔥 TOKENIZERS_PARALLELISM=true (Rust internal parallelism enabled)")
+    logger.info("   Note: datasets library may still show 'Setting TOKENIZERS_PARALLELISM=false'")
+    logger.info("   This is a library message, but Rust parallelism is active inside batch functions")
     logger.info("="*80)
 
     for idx, source in enumerate(all_sources):

@@ -70,13 +70,13 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (멀티프로세스 병렬 처리)
-DEFAULT_NUM_PROC = 8  # datasets.map() 병렬 처리
-FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스 (CPU 개수 / 2)
-MAX_FILTER_NUM_PROC = 8  # 최대 필터링 프로세스
+# Default process counts (Rust 내부 병렬 처리 - 메모리 효율)
+DEFAULT_NUM_PROC = 1  # 단일 프로세스 (메모리 절약 + Rust 병렬 처리)
+FILTER_NUM_PROC_DIVISOR = 1  # 필터링도 단일 프로세스
+MAX_FILTER_NUM_PROC = 1  # 최대 필터링 프로세스
 
 # Performance settings
-ESTIMATED_TOKENIZATION_SPEED = 10000  # samples/sec (멀티프로세스)
+ESTIMATED_TOKENIZATION_SPEED = 8000  # samples/sec (Rust 내부 병렬 처리)
 WARMUP_TEXT_PATTERN = "Hello world " * 100
 WARMUP_TEXT_COUNT = 10
 
@@ -309,31 +309,27 @@ def log_with_rank(msg: str, rank: int = None, is_main: bool = None):
 
 def calculate_optimal_num_proc(total_samples: int, cpu_count: int, available_memory: int = None) -> int:
     """
-    최적 프로세스 수 계산
+    최적 프로세스 수 계산 (항상 1 반환 - 메모리 효율)
 
-    데이터셋 크기에 따라 적절한 num_proc 결정:
-    - 작은 데이터셋: 오버헤드 최소화
-    - 큰 데이터셋: 병렬 처리로 속도 향상
+    num_proc > 1을 사용하면:
+    1. 각 프로세스가 전체 데이터셋을 메모리에 로드 → 메모리 폭발
+    2. datasets 라이브러리가 TOKENIZERS_PARALLELISM=false 강제 설정
+    3. Rust 내부 병렬 처리 비활성화
+
+    num_proc = 1을 사용하면:
+    1. 메모리 효율: 데이터셋 1번만 로드
+    2. Rust Fast Tokenizer의 내부 멀티스레딩 활용 가능
+    3. 전체적으로 더 안정적이고 빠름
 
     Args:
-        total_samples: 총 샘플 수
-        cpu_count: CPU 코어 수
-        available_memory: 사용 가능한 메모리 (선택적)
+        total_samples: 총 샘플 수 (사용 안됨)
+        cpu_count: CPU 코어 수 (사용 안됨)
+        available_memory: 사용 가능한 메모리 (사용 안됨)
 
     Returns:
-        최적 프로세스 수 (1 ~ DEFAULT_NUM_PROC)
+        항상 1 (메모리 효율 + Rust 병렬 처리)
     """
-    # 작은 데이터셋: 단일 프로세스
-    if total_samples < 10000:
-        return 1
-
-    # 중간 데이터셋: CPU의 절반
-    elif total_samples < 100000:
-        return min(4, cpu_count // 2)
-
-    # 큰 데이터셋: 최대 병렬 처리
-    else:
-        return min(DEFAULT_NUM_PROC, cpu_count)
+    return 1
 
 
 def get_tokenization_env_config() -> Dict[str, int]:
@@ -674,6 +670,9 @@ def tokenize_dataset(
         keep_in_memory=False,
         desc=f"Tokenizing ({num_proc} procs)",
     )
+
+    # datasets.map() 완료 후 TOKENIZERS_PARALLELISM 복원
+    os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
 
     elapsed = time.time() - start_time
     speed = total_samples / elapsed if elapsed > 0 else 0
