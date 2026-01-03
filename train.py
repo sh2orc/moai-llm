@@ -70,10 +70,10 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (멀티프로세싱)
-DEFAULT_NUM_PROC = 8  # 병렬 처리
-FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스
-MAX_FILTER_NUM_PROC = 8  # 최대 프로세스
+# Default process counts (Rust Fast Tokenizer 단일 프로세스 최적화)
+DEFAULT_NUM_PROC = 1  # datasets.map() fork 방지 → TOKENIZERS_PARALLELISM=true 유지
+FILTER_NUM_PROC_DIVISOR = 1  # 필터링도 단일 프로세스
+MAX_FILTER_NUM_PROC = 1  # 메모리 안정성
 
 # Performance settings
 ESTIMATED_TOKENIZATION_SPEED = 5000  # samples/sec (Rust Fast Tokenizer 단일 프로세스)
@@ -309,41 +309,29 @@ def log_with_rank(msg: str, rank: int = None, is_main: bool = None):
 
 def calculate_optimal_num_proc(total_samples: int, cpu_count: int, available_memory: int = None) -> int:
     """
-    CPU, 메모리, 데이터 크기를 고려한 최적 프로세스 수 계산
+    최적 프로세스 수 계산 (항상 1 반환)
+
+    Rust Fast Tokenizer는 단일 프로세스에서 내부 멀티스레딩을 사용하는 것이 가장 빠름.
+    datasets.map(num_proc > 1)을 사용하면:
+    1. 프로세스 fork 발생
+    2. datasets 라이브러리가 TOKENIZERS_PARALLELISM=false로 강제 설정
+    3. Rust 내부 병렬 처리 비활성화
+    4. 멀티프로세싱 오버헤드 추가
+
+    따라서 항상 num_proc=1로 고정하여:
+    - TOKENIZERS_PARALLELISM=true 유지
+    - Rust Fast Tokenizer 내부 병렬 처리 활성화
+    - 초기화 오버헤드 제거
 
     Args:
-        total_samples: 총 샘플 수
-        cpu_count: CPU 코어 수
-        available_memory: 사용 가능한 메모리 (bytes), None이면 자동 감지
+        total_samples: 총 샘플 수 (사용 안됨)
+        cpu_count: CPU 코어 수 (사용 안됨)
+        available_memory: 사용 가능한 메모리 (사용 안됨)
 
     Returns:
-        최적 프로세스 수
+        항상 1
     """
-    # 메모리 기반 제한
-    if available_memory is None:
-        if psutil:
-            available_memory = psutil.virtual_memory().available
-        else:
-            available_memory = 16 * 1024**3  # 16GB 기본값
-
-    # 프로세스당 예상 메모리 사용량 (10GB)
-    estimated_memory_per_proc = 10 * 1024**3
-    max_proc_by_memory = max(1, int(available_memory / estimated_memory_per_proc))
-
-    # CPU 코어 기반 제한
-    max_proc_by_cpu = min(cpu_count, DEFAULT_NUM_PROC)
-
-    # 데이터 크기 기반 제한 (작은 데이터셋은 적은 프로세스)
-    if total_samples < 10000:
-        max_proc_by_data = 2
-    elif total_samples < 100000:
-        max_proc_by_data = 4
-    else:
-        max_proc_by_data = 8
-
-    # 최소값 선택
-    optimal = min(max_proc_by_memory, max_proc_by_cpu, max_proc_by_data)
-    return max(1, optimal)  # 최소 1개
+    return 1
 
 
 def get_tokenization_env_config() -> Dict[str, int]:
