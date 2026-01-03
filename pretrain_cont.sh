@@ -46,12 +46,29 @@ case $CONFIG_SIZE in
         esac
         ;;
     5b)
-        MODEL_CONFIG="configs/model_config.json"
+        MODEL_CONFIG="configs/model_config_5b.json"
         BATCH_SIZE=1
         GRADIENT_ACCUMULATION_STEPS=96  # effective = 1*4*96 = 384
         ;;
+    16b)
+        MODEL_CONFIG="configs/model_config_16b.json"
+        case $GPU_MEMORY in
+            48)
+                BATCH_SIZE=1   # A40 48GB
+                GRADIENT_ACCUMULATION_STEPS=48  # effective = 1*8*48 = 384
+                ;;
+            80)
+                BATCH_SIZE=2   # A100 80GB
+                GRADIENT_ACCUMULATION_STEPS=48  # effective = 2*4*48 = 384
+                ;;
+            *)
+                echo "16B model requires at least 48GB GPU memory"
+                exit 1
+                ;;
+        esac
+        ;;
     *)
-        echo "Unknown config size: $CONFIG_SIZE (use 2b or 5b)"
+        echo "Unknown config size: $CONFIG_SIZE (use 2b, 5b or 16b)"
         exit 1
         ;;
 esac
