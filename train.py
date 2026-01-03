@@ -70,13 +70,13 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (멀티프로세싱 병렬 처리)
-DEFAULT_NUM_PROC = 4  # 4개 프로세스 병렬 처리 (속도와 메모리 균형)
+# Default process counts (Rust 내부 병렬화)
+DEFAULT_NUM_PROC = 1  # 단일 프로세스 (Rust 멀티스레딩 활용)
 FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스
 MAX_FILTER_NUM_PROC = 2  # 최대 필터링 프로세스
 
 # Performance settings
-ESTIMATED_TOKENIZATION_SPEED = 10000  # samples/sec (멀티프로세싱)
+ESTIMATED_TOKENIZATION_SPEED = 8000  # samples/sec (Rust internal parallelism)
 WARMUP_TEXT_PATTERN = "Hello world " * 100
 WARMUP_TEXT_COUNT = 10
 
@@ -592,15 +592,16 @@ def tokenize_dataset(
 
     # num_proc 설정
     if num_proc is None:
-        num_proc = 4  # 4개 프로세스로 병렬 처리
+        num_proc = 1  # 단일 프로세스 (Rust 내부 병렬화 활용)
 
-    batch_size = 10000
+    batch_size = 100000  # 대형 배치로 Rust 멀티스레딩 최대 활용
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
-    logger.info(f"   Processes: {num_proc}")
+    logger.info(f"   Processes: {num_proc} (Rust internal parallelism)")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
+    logger.info(f"   TOKENIZERS_PARALLELISM: {os.environ.get('TOKENIZERS_PARALLELISM', 'not set')}")
 
     start_time = time.time()
 
