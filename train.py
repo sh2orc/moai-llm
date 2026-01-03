@@ -1163,8 +1163,8 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 logger.info(f"    [Rank 0] Dataset already saved at: {dataset_save_path}")
 
             # 필터 완료 마커 생성
-            filter_marker.touch()
-            logger.info(f"    [Rank 0] Created filter marker: {filter_marker}")
+            filter_marker_path.touch()
+            logger.info(f"    [Rank 0] Created filter marker: {filter_marker_path}")
 
             # 변환 완료 후 barrier
             ddp_barrier()
@@ -1173,7 +1173,7 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             # 다른 프로세스는 필터 마커 대기 후 최종 결과만 로드!
             logger.info(f"    [Rank {current_rank}] Waiting for rank 0 to complete all processing...")
 
-            if not wait_for_marker(filter_marker, DATASET_PROCESSING_TIMEOUT, CHECK_INTERVAL, current_rank):
+            if not wait_for_marker(filter_marker_path, DATASET_PROCESSING_TIMEOUT, CHECK_INTERVAL, current_rank):
                 raise TimeoutError(f"Rank {current_rank}: Dataset processing timeout after {DATASET_PROCESSING_TIMEOUT}s")
 
             logger.info(f"    [Rank {current_rank}] Processing complete, loading final result from cache...")
