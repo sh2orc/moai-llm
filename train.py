@@ -619,60 +619,62 @@ def tokenize_dataset(
 
     start_time = time.time()
 
-    # 청크로 나눠서 직접 토크나이징 (메모리 효율적)
+    # Iteration 기반 토크나이징 (인덱싱 회피)
     logger.info(f"   Tokenizing {total_samples:,} texts in batches of {batch_size:,}...")
+    logger.info(f"   Using iteration-based approach (avoiding index overhead)...")
+
     all_input_ids = []
     num_batches = (total_samples + batch_size - 1) // batch_size
 
-    for i in range(0, total_samples, batch_size):
-        batch_idx = i // batch_size + 1
-        end_idx = min(i + batch_size, total_samples)
+    batch_texts = []
+    batch_idx = 0
+    processed = 0
 
-        # dataset에서 배치 추출 (직접 슬라이싱, select()보다 빠름)
-        batch_texts = dataset[text_column][i:end_idx]
+    # Dataset을 순회하면서 배치 단위로 처리
+    for idx, example in enumerate(dataset):
+        batch_texts.append(example[text_column])
 
-        # Arrow 배열을 list로 변환 (필수)
-        if hasattr(batch_texts, 'to_pylist'):
-            batch_texts = batch_texts.to_pylist()
-        elif not isinstance(batch_texts, list):
-            batch_texts = list(batch_texts)
+        # 배치가 찼거나 마지막 샘플인 경우 토크나이징
+        if len(batch_texts) >= batch_size or idx == total_samples - 1:
+            batch_idx += 1
 
-        # Rust tokenizer 직접 사용 (GIL 우회)
-        if rust_tokenizer is not None:
-            # 순수 Rust encode_batch() 사용
-            if packing:
-                # Truncation 없이 인코딩
-                encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
-                batch_input_ids = [enc.ids for enc in encodings]
+            # Rust tokenizer 직접 사용 (GIL 우회)
+            if rust_tokenizer is not None:
+                # 순수 Rust encode_batch() 사용
+                if packing:
+                    # Truncation 없이 인코딩
+                    encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
+                    batch_input_ids = [enc.ids for enc in encodings]
+                else:
+                    # Truncation 적용
+                    rust_tokenizer.enable_truncation(max_seq_length)
+                    encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
+                    batch_input_ids = [enc.ids for enc in encodings]
+                    rust_tokenizer.no_truncation()  # 원상복구
             else:
-                # Truncation 적용
-                rust_tokenizer.enable_truncation(max_seq_length)
-                encodings = rust_tokenizer.encode_batch(batch_texts, add_special_tokens=True)
-                batch_input_ids = [enc.ids for enc in encodings]
-                rust_tokenizer.no_truncation()  # 원상복구
-        else:
-            # Fallback: transformers wrapper 사용
-            encoded = tokenizer(
-                batch_texts,
-                truncation=not packing,
-                max_length=max_seq_length if not packing else None,
-                padding=False,
-                add_special_tokens=True,
-                return_tensors=None
-            )
-            batch_input_ids = encoded['input_ids']
+                # Fallback: transformers wrapper 사용
+                encoded = tokenizer(
+                    batch_texts,
+                    truncation=not packing,
+                    max_length=max_seq_length if not packing else None,
+                    padding=False,
+                    add_special_tokens=True,
+                    return_tensors=None
+                )
+                batch_input_ids = encoded['input_ids']
 
-        all_input_ids.extend(batch_input_ids)
+            all_input_ids.extend(batch_input_ids)
+            processed += len(batch_texts)
 
-        # 메모리 해제
-        del batch_texts
-        gc.collect()
+            # 메모리 해제
+            batch_texts = []
+            gc.collect()
 
-        # 진행 상황 로깅
-        if batch_idx % 10 == 0 or batch_idx == num_batches:
-            elapsed = time.time() - start_time
-            speed = end_idx / elapsed if elapsed > 0 else 0
-            logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {end_idx:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
+            # 진행 상황 로깅
+            if batch_idx % 10 == 0 or batch_idx == num_batches:
+                elapsed = time.time() - start_time
+                speed = processed / elapsed if elapsed > 0 else 0
+                logger.info(f"   Progress: {batch_idx}/{num_batches} batches, {processed:,}/{total_samples:,} samples ({speed:,.0f} samples/sec)")
 
     # Dataset으로 변환
     logger.info(f"   Converting to Dataset format...")

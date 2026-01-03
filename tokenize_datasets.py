@@ -53,6 +53,16 @@ from train import (
     get_optimal_num_shards,
 )
 
+# ============================================================================
+# Check for Rust tokenizer availability
+# ============================================================================
+def check_rust_tokenizer():
+    """Check if Rust tokenizer binary is available"""
+    rust_binary = Path(__file__).parent / "tokenize_rust" / "target" / "release" / "moai-tokenizer"
+    return rust_binary.exists()
+
+RUST_AVAILABLE = check_rust_tokenizer()
+
 
 def tokenize_single_dataset(
     source: tuple,
@@ -113,16 +123,31 @@ def tokenize_single_dataset(
             text_column=args.text_column,
         )
 
-    # 토크나이징
+    # 토크나이징 - Rust 우선, Python fallback
     logger.info(f"  🔤 Tokenizing dataset...")
-    logger.info(f"     TOKENIZERS_PARALLELISM={os.environ.get('TOKENIZERS_PARALLELISM', 'not set')}")
-    tokenized_ds = tokenize_dataset(
-        dataset=dataset["train"],
-        tokenizer=tokenizer,
-        text_column=text_column,
-        max_seq_length=args.max_seq_length,
-        packing=args.packing,
-    )
+
+    if RUST_AVAILABLE:
+        logger.info(f"  🚀 Using Rust tokenizer (ultra-fast mode)")
+        from tokenize_rust_wrapper import tokenize_with_rust
+
+        tokenized_ds = tokenize_with_rust(
+            dataset=dataset["train"],
+            tokenizer_path=args.tokenizer_path,
+            text_column=text_column,
+            max_seq_length=0 if args.packing else args.max_seq_length,
+            batch_size=10000,
+        )
+    else:
+        logger.info(f"  🐍 Using Python tokenizer (Rust not available)")
+        logger.info(f"     TOKENIZERS_PARALLELISM={os.environ.get('TOKENIZERS_PARALLELISM', 'not set')}")
+        logger.info(f"     Tip: Run ./setup_rust_tokenizer.sh for 25x faster tokenization!")
+        tokenized_ds = tokenize_dataset(
+            dataset=dataset["train"],
+            tokenizer=tokenizer,
+            text_column=text_column,
+            max_seq_length=args.max_seq_length,
+            packing=args.packing,
+        )
 
     # Packing (선택적) - PyArrow 스트리밍 + 점진적 디스크 쓰기
     if args.packing:
