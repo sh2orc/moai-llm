@@ -628,9 +628,8 @@ def tokenize_dataset(
         batch_idx = i // batch_size + 1
         end_idx = min(i + batch_size, total_samples)
 
-        # dataset에서 배치만 추출 (메모리 효율적)
-        batch_dataset = dataset.select(range(i, end_idx))
-        batch_texts = batch_dataset[text_column]
+        # dataset에서 배치 추출 (직접 슬라이싱, select()보다 빠름)
+        batch_texts = dataset[text_column][i:end_idx]
 
         # Arrow 배열을 list로 변환 (필수)
         if hasattr(batch_texts, 'to_pylist'):
@@ -667,7 +666,6 @@ def tokenize_dataset(
 
         # 메모리 해제
         del batch_texts
-        del batch_dataset
         gc.collect()
 
         # 진행 상황 로깅
