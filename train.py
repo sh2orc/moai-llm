@@ -66,9 +66,9 @@ WARMUP_STEPS_FIRST_STAGE = 2000  # For first training stage
 WARMUP_STEPS_RESUME = 100  # For resumed training
 
 # Default batch sizes (Rust Fast Tokenizer 단일 프로세스 최적화)
-BATCH_SIZE_LARGE_DATASET = 1000  # 대규모: Rust 성능 활용
-BATCH_SIZE_DEFAULT = 2000  # 기본: 단일 프로세스로 큰 배치
-WRITER_BATCH_SIZE = 10000  # 디스크 쓰기 배치
+BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
+BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
+WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
 # Default process counts (단일 프로세스로 메모리 안정성 + Rust 속도)
 DEFAULT_NUM_PROC = 1  # Rust Fast Tokenizer는 단일 프로세스가 가장 빠름
@@ -770,8 +770,15 @@ def tokenize_dataset(
     batch_size = BATCH_SIZE_LARGE_DATASET if total_samples > DATASET_SIZE_LARGE else BATCH_SIZE_DEFAULT
     writer_batch_size = WRITER_BATCH_SIZE
 
-    # 핵심: 멀티프로세싱 사용 시 반드시 false (CPU 쓰레싱 방지)
-    os.environ[ENV_TOKENIZERS_PARALLELISM] = "false"
+    # TOKENIZERS_PARALLELISM 설정
+    # num_proc=1: Rust 내부 병렬 처리 활성화 (true)
+    # num_proc>1: Python 멀티프로세싱 사용, Rust 병렬 비활성화 (false)
+    if num_proc == 1:
+        os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"  # Rust 멀티스레딩 활성화!
+        logger.info("   TOKENIZERS_PARALLELISM=true (Rust internal parallelism enabled)")
+    else:
+        os.environ[ENV_TOKENIZERS_PARALLELISM] = "false"  # Python 멀티프로세싱 사용
+        logger.info("   TOKENIZERS_PARALLELISM=false (Python multiprocessing mode)")
 
     # Fast Tokenizer 확인
     if not tokenizer.is_fast:
@@ -1734,11 +1741,29 @@ def train(args):
         args.tokenizer_path,
         use_fast=True,
     )
+
+    # Fast Tokenizer 강제 체크
+    if not tokenizer.is_fast:
+        raise ValueError(
+            f"❌ Fast Tokenizer not available! "
+            f"Current tokenizer: {type(tokenizer).__name__}\n"
+            f"Please ensure you're using a tokenizer that supports Fast mode (Rust-based)."
+        )
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if is_main_process and tokenizer.is_fast:
+    if is_main_process:
         logger.info("✅ Using Fast Tokenizer (Rust-based)")
+        logger.info(f"   Tokenizer type: {type(tokenizer).__name__}")
+
+        # Warmup: Rust 토크나이저 초기화 (첫 호출이 느릴 수 있음)
+        logger.info("   Warming up tokenizer...")
+        warmup_start = time.time()
+        for _ in range(WARMUP_TEXT_COUNT):
+            _ = tokenizer(WARMUP_TEXT_PATTERN, truncation=False, padding=False)
+        warmup_time = time.time() - warmup_start
+        logger.info(f"   Warmup completed in {warmup_time:.2f}s")
 
     # ============================================================================
     # Sequential 모드: 먼저 토크나이징 후 학습
