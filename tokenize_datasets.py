@@ -16,10 +16,14 @@ Usage:
 TOKENIZERS_PARALLELISM=true로 Rust Fast Tokenizer의 내부 병렬 처리를 최대한 활용합니다.
 """
 
+# ⚠️ 중요: 모든 import 전에 TOKENIZERS_PARALLELISM 설정!
+# tokenizers 라이브러리가 import 시점에 이 값을 캐싱하므로 가장 먼저 설정해야 함
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
 import argparse
 import hashlib
 import logging
-import os
 import sys
 from pathlib import Path
 

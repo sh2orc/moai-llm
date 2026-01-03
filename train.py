@@ -96,7 +96,11 @@ ENV_TOKENIZERS_PARALLELISM = "TOKENIZERS_PARALLELISM"
 # Early initialization
 # ============================================================================
 
+# ⚠️ 중요: 모든 import 전에 TOKENIZERS_PARALLELISM 설정!
+# tokenizers 라이브러리가 import 시점에 이 값을 캐싱하므로 가장 먼저 설정해야 함
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
 import sys
 import time as time_module
 from pathlib import Path as PathType
@@ -815,12 +819,15 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 keep_in_memory=False,  # 메모리 맵 파일 사용
                 desc=f"Converting {dataset_name}",
             )
-            
+
+            # dataset.map() 후 TOKENIZERS_PARALLELISM 복원
+            os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
+
             # 변환 완료 마커 생성 (filter 전에!)
             cache_marker.parent.mkdir(parents=True, exist_ok=True)
             cache_marker.touch()
             logger.info(f"    [Rank 0] Created conversion marker: {cache_marker}")
-            
+
             # 빈 텍스트 필터링 (병렬 처리로 빠르게)
             filter_num_proc = min(dataset_num_proc // FILTER_NUM_PROC_DIVISOR, MAX_FILTER_NUM_PROC)
             logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
@@ -831,6 +838,9 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
                 keep_in_memory=False,
                 load_from_cache_file=True,
             )
+
+            # filter() 후 TOKENIZERS_PARALLELISM 복원
+            os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
 
             logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
 
@@ -899,7 +909,10 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             keep_in_memory=False,
             desc=f"Converting {dataset_name}",
         )
-        
+
+        # dataset.map() 후 TOKENIZERS_PARALLELISM 복원
+        os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
+
         logger.info(f"    Filtering empty texts...")
         filter_num_proc = min(dataset_num_proc // FILTER_NUM_PROC_DIVISOR, MAX_FILTER_NUM_PROC)
         converted = converted.filter(
@@ -909,6 +922,9 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             writer_batch_size=dataset_writer_batch_size,
             keep_in_memory=False,
         )
+
+        # filter() 후 TOKENIZERS_PARALLELISM 복원
+        os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
     
     # Dataset 객체를 그대로 반환 (메모리 효율적)
     # 리스트 변환을 피하고 Dataset을 직접 사용하여 메모리 사용량 최소화
