@@ -70,13 +70,13 @@ BATCH_SIZE_LARGE_DATASET = 5000  # 대규모: Rust 성능 최대 활용
 BATCH_SIZE_DEFAULT = 10000  # 기본: 단일 프로세스로 큰 배치
 WRITER_BATCH_SIZE = 50000  # 디스크 쓰기 배치
 
-# Default process counts (Rust 내부 병렬 처리 - 메모리 효율)
-DEFAULT_NUM_PROC = 1  # 단일 프로세스 (메모리 절약 + Rust 병렬 처리)
-FILTER_NUM_PROC_DIVISOR = 1  # 필터링도 단일 프로세스
-MAX_FILTER_NUM_PROC = 1  # 최대 필터링 프로세스
+# Default process counts (멀티프로세싱 병렬 처리)
+DEFAULT_NUM_PROC = 4  # 4개 프로세스 병렬 처리 (속도와 메모리 균형)
+FILTER_NUM_PROC_DIVISOR = 2  # 필터링 프로세스
+MAX_FILTER_NUM_PROC = 2  # 최대 필터링 프로세스
 
 # Performance settings
-ESTIMATED_TOKENIZATION_SPEED = 8000  # samples/sec (Rust 내부 병렬 처리)
+ESTIMATED_TOKENIZATION_SPEED = 10000  # samples/sec (멀티프로세싱)
 WARMUP_TEXT_PATTERN = "Hello world " * 100
 WARMUP_TEXT_COUNT = 10
 
@@ -575,96 +575,63 @@ def tokenize_dataset(
     num_proc: int = None,
 ):
     """
-    대규모 배치 단일 프로세스 토크나이징 (메모리 효율 최적화)
-
-    멀티프로세싱 대신 큰 배치로 처리:
-    - 메모리 효율적 (복사 없음)
-    - Rust 토크나이저 활용
-    - 안정적 (pickle 문제 없음)
+    datasets.map() 기반 토크나이징 (안정적)
 
     Args:
         dataset: HuggingFace Dataset 객체
-        tokenizer: 토크나이저 (Fast Tokenizer 권장)
+        tokenizer: 토크나이저
         text_column: 텍스트 컬럼 이름
         max_seq_length: 최대 시퀀스 길이
         packing: True면 truncation 없이 토큰화
-        num_proc: 사용 안됨 (하위 호환성)
+        num_proc: 프로세스 수 (None이면 1)
 
     Returns:
         토큰화된 Dataset 객체
     """
-    from datasets import Dataset as HFDataset
-    import gc
-
     total_samples = len(dataset)
 
-    # 배치 크기 - 메모리와 속도 균형
-    batch_size = 50000  # 5만 샘플씩
+    # num_proc 설정
+    if num_proc is None:
+        num_proc = 4  # 4개 프로세스로 병렬 처리
+
+    batch_size = 10000
 
     logger.info(f"🔤 Tokenization config:")
     logger.info(f"   Samples: {total_samples:,}")
+    logger.info(f"   Processes: {num_proc}")
     logger.info(f"   Batch size: {batch_size:,}")
     logger.info(f"   Mode: {'packing' if packing else 'truncation'}")
-    logger.info(f"   Method: Large batch processing")
-
-    # Fast Tokenizer 확인
-    if not tokenizer.is_fast:
-        logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
     start_time = time.time()
-    all_input_ids = []
 
-    # 배치별 처리
-    num_batches = (total_samples + batch_size - 1) // batch_size
-    logger.info(f"   Processing {num_batches} batches...")
-
-    for batch_idx in range(num_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, total_samples)
-
-        # 진행 상황 출력
-        if batch_idx % 10 == 0 or batch_idx == num_batches - 1:
-            progress = (batch_idx + 1) / num_batches * 100
-            logger.info(f"   Batch {batch_idx+1}/{num_batches} ({progress:.1f}%)")
-
-        # 배치 추출
-        batch = dataset[start_idx:end_idx]
-
-        # 텍스트 추출
-        if isinstance(batch[text_column], list):
-            texts = batch[text_column]
-        else:
-            texts = [batch[text_column]]
-
-        # 토크나이징
+    # 토크나이징 함수
+    def batch_tokenize(examples):
         if packing:
-            tokenized_batch = tokenizer(
-                texts,
+            return tokenizer(
+                examples[text_column],
                 truncation=False,
                 padding=False,
                 add_special_tokens=True,
             )
         else:
-            tokenized_batch = tokenizer(
-                texts,
+            return tokenizer(
+                examples[text_column],
                 truncation=True,
                 max_length=max_seq_length,
                 padding=False,
                 add_special_tokens=True,
             )
 
-        # 결과 수집
-        all_input_ids.extend(tokenized_batch["input_ids"])
-
-        # 메모리 해제
-        del batch
-        del texts
-        del tokenized_batch
-        gc.collect()
-
-    # HuggingFace Dataset으로 변환
-    logger.info(f"   Converting to Dataset...")
-    tokenized = HFDataset.from_dict({"input_ids": all_input_ids})
+    # datasets.map() 사용
+    tokenized = dataset.map(
+        batch_tokenize,
+        batched=True,
+        batch_size=batch_size,
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+        load_from_cache_file=False,
+        desc=f"Tokenizing",
+    )
 
     elapsed = time.time() - start_time
     speed = total_samples / elapsed if elapsed > 0 else 0
