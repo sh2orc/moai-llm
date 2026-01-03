@@ -1389,24 +1389,74 @@ def tokenize_single_source(
             packing=args.packing,
         )
 
-        # Packing (선택적)
+        # Packing (선택적) - PyArrow 스트리밍 기반 (파일 페이징)
         if args.packing:
-            logger.info(f"  📦 Packing sequences...")
-            tokenized_list = [{"input_ids": ids} for ids in tokenized_ds["input_ids"]]
-            del tokenized_ds
-            gc.collect()
+            import tempfile
+            import shutil
 
-            concatenated_chunks = concatenate_sequences(
-                tokenized_sequences=tokenized_list,
-                max_seq_length=args.max_seq_length,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-            del tokenized_list
-            gc.collect()
+            logger.info(f"  📦 Packing sequences (PyArrow streaming for memory efficiency)...")
 
-            tokenized_dataset = HFDataset.from_list(concatenated_chunks)
-            del concatenated_chunks
-            gc.collect()
+            total_samples = len(tokenized_ds)
+            logger.info(f"     Total samples: {total_samples:,}")
+
+            # 1. 임시 디렉토리에 Arrow 포맷으로 저장 (디스크 페이징 시작)
+            temp_dir = Path(tempfile.mkdtemp(prefix="moai_packing_"))
+            try:
+                logger.info(f"     Saving to temporary Arrow files...")
+                tokenized_ds.save_to_disk(str(temp_dir / "tokenized"))
+                del tokenized_ds
+                gc.collect()
+
+                # 2. 스트리밍 방식으로 청크 단위 packing
+                STREAM_BATCH_SIZE = 500000  # 50만 샘플씩 스트리밍
+                all_packed_chunks = []
+
+                # Arrow 파일에서 스트리밍 로드
+                from datasets import load_from_disk
+                dataset_on_disk = load_from_disk(str(temp_dir / "tokenized"))
+
+                num_batches = (total_samples + STREAM_BATCH_SIZE - 1) // STREAM_BATCH_SIZE
+                logger.info(f"     Processing {num_batches} batches of {STREAM_BATCH_SIZE:,} samples each")
+
+                for batch_idx in range(num_batches):
+                    start_idx = batch_idx * STREAM_BATCH_SIZE
+                    end_idx = min(start_idx + STREAM_BATCH_SIZE, total_samples)
+
+                    logger.info(f"     Batch {batch_idx+1}/{num_batches}: Loading {start_idx:,} - {end_idx:,}")
+
+                    # Arrow에서 배치 로드 (메모리 효율적)
+                    batch_data = dataset_on_disk.select(range(start_idx, end_idx))
+                    tokenized_list = [{"input_ids": ids} for ids in batch_data["input_ids"]]
+                    del batch_data
+                    gc.collect()
+
+                    logger.info(f"     Batch {batch_idx+1}/{num_batches}: Packing...")
+                    packed_batch = concatenate_sequences(
+                        tokenized_sequences=tokenized_list,
+                        max_seq_length=args.max_seq_length,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                    del tokenized_list
+                    gc.collect()
+
+                    all_packed_chunks.extend(packed_batch)
+                    del packed_batch
+                    gc.collect()
+
+                    logger.info(f"     ✓ Batch {batch_idx+1}/{num_batches} complete ({len(all_packed_chunks):,} chunks so far)")
+
+                del dataset_on_disk
+                gc.collect()
+
+                logger.info(f"  ✓ Total packed chunks: {len(all_packed_chunks):,}")
+                tokenized_dataset = HFDataset.from_list(all_packed_chunks)
+                del all_packed_chunks
+                gc.collect()
+
+            finally:
+                # 임시 파일 삭제
+                logger.info(f"     Cleaning up temporary files...")
+                shutil.rmtree(temp_dir, ignore_errors=True)
         else:
             tokenized_dataset = tokenized_ds
 
