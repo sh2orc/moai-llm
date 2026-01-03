@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use arrow::array::{ArrayRef, Int32Array, ListArray, StringArray};
+use arrow::array::{Array, ArrayRef, Int32Array, ListArray, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use clap::Parser;
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     println!("📚 Loading tokenizer...");
     let tokenizer = Arc::new(
         Tokenizer::from_file(&args.tokenizer)
-            .context("Failed to load tokenizer")?
+            .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?
     );
     println!("✅ Tokenizer loaded: vocab_size={}", tokenizer.get_vocab_size(true));
 
@@ -121,22 +121,24 @@ fn main() -> Result<()> {
             .collect();
 
         // Parallel tokenization with Rayon (key performance boost!)
+        let tokenizer_ref = &tokenizer;
+        let max_length = args.max_length;
+
         let tokenized: Vec<Vec<i32>> = texts
             .par_chunks(args.batch_size)
             .flat_map(|chunk| {
-                let tokenizer = Arc::clone(&tokenizer);
                 chunk
                     .iter()
                     .map(|text| {
-                        let encoding = tokenizer
+                        let encoding = tokenizer_ref
                             .encode(text.clone(), true)
                             .expect("Tokenization failed");
 
                         let ids = encoding.get_ids();
 
                         // Apply truncation if max_length > 0
-                        if args.max_length > 0 && ids.len() > args.max_length {
-                            ids[..args.max_length].iter().map(|&id| id as i32).collect()
+                        if max_length > 0 && ids.len() > max_length {
+                            ids[..max_length].iter().map(|&id| id as i32).collect()
                         } else {
                             ids.iter().map(|&id| id as i32).collect()
                         }
