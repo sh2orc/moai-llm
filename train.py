@@ -1689,6 +1689,14 @@ def main():
              "Use this to pre-tokenize before running torchrun."
     )
 
+    # Skip tokenization 모드 (이미 토큰화된 데이터 사용)
+    parser.add_argument(
+        "--skip_tokenization",
+        action="store_true",
+        help="Skip tokenization and load pre-tokenized datasets from cache. "
+             "Use this when you've already run tokenize_datasets.py."
+    )
+
     # 로깅
     parser.add_argument("--logging_steps", type=int, default=100)
     parser.add_argument("--save_steps", type=int, default=1000)
@@ -1867,25 +1875,62 @@ def main():
             logger.info(f"📊 Stage {idx+1}/{len(all_sources)}: {source[1]}")
             logger.info("="*80)
 
-        # 1. 토크나이징 (Rank 0만 실행)
-        if is_main_process:
-            logger.info("🔤 Step 1: Tokenizing...")
-            dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+        # 1. 데이터셋 정보 로드 (토크나이징 또는 캐시)
+        if args.skip_tokenization:
+            # Skip tokenization 모드: 모든 rank가 캐시에서 직접 로드
+            if is_main_process:
+                logger.info("📥 Step 1: Loading from cache (skip_tokenization=True)...")
 
-        # 2. Barrier (모든 rank 동기화)
-        if is_main_process:
-            logger.info("⏳ Step 2: Synchronizing all ranks...")
-        ddp_barrier()
-        if is_main_process:
-            logger.info("✅ All ranks synchronized!")
+            # 캐시에서 정보 로드 (barrier 없이 각 rank가 독립적으로 로드)
+            src_name, tokenized_cache_path, tokenized_marker = calculate_cache_paths(
+                source, tokenizer, args, idx
+            )
 
-        # 3. Non-main ranks는 캐시에서 정보 로드
-        if not is_main_process:
-            dataset_info = load_dataset_info_from_cache(source, tokenizer, args, idx)
+            # 마커 파일 확인
+            if not tokenized_marker.exists():
+                if is_main_process:
+                    logger.error(f"❌ Tokenized cache not found for {src_name}")
+                    logger.error(f"   Expected marker: {tokenized_marker}")
+                    logger.error(f"   Please run tokenize_datasets.py first!")
+                raise FileNotFoundError(f"Tokenized cache not found for {src_name}")
 
-        # 4. 학습 (모든 rank)
+            # 샘플 수 확인을 위해 dataset 로드
+            from datasets import Dataset as HFDataset
+            import gc
+            tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
+            num_samples = len(tokenized_dataset)
+            del tokenized_dataset
+            gc.collect()
+
+            dataset_info = {
+                'name': src_name,
+                'cache_path': tokenized_cache_path,
+                'num_samples': num_samples,
+            }
+
+            if is_main_process:
+                logger.info(f"✅ Loaded from cache: {num_samples:,} samples")
+        else:
+            # 일반 모드: Rank 0이 토크나이징, 다른 ranks는 대기 후 로드
+            if is_main_process:
+                logger.info("🔤 Step 1: Tokenizing...")
+                dataset_info = tokenize_single_source(source, tokenizer, args, idx)
+
+            # Barrier (모든 rank 동기화)
+            if is_main_process:
+                logger.info("⏳ Step 2: Synchronizing all ranks...")
+            ddp_barrier()
+            if is_main_process:
+                logger.info("✅ All ranks synchronized!")
+
+            # Non-main ranks는 캐시에서 정보 로드
+            if not is_main_process:
+                dataset_info = load_dataset_info_from_cache(source, tokenizer, args, idx)
+
+        # 2. 학습 (모든 rank)
         if is_main_process:
-            logger.info("🏋️ Step 4: Training...")
+            step_num = 2 if args.skip_tokenization else 4
+            logger.info(f"🏋️ Step {step_num}: Training...")
         checkpoint_path = train_single_dataset(
             args=args,
             dataset_info=dataset_info,

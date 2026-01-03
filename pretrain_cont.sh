@@ -166,8 +166,35 @@ echo "Logging:               $([ "$USE_WANDB" = "true" ] && echo "W&B ($WANDB_PR
 echo "========================================================================"
 
 # ============================================================================
-# Run Training
+# Step 1: Tokenize Datasets (Single Process)
 # ============================================================================
+
+echo "========================================================================"
+echo "Step 1: Tokenizing datasets (single process)..."
+echo "========================================================================"
+
+python tokenize_datasets.py \
+    --dataset "${DATASETS[@]}" \
+    --tokenizer_path "$TOKENIZER_PATH" \
+    --max_seq_length "$MAX_SEQ_LENGTH" \
+    --packing
+
+if [ $? -ne 0 ]; then
+    echo "❌ Tokenization failed!"
+    exit 1
+fi
+
+echo ""
+echo "✅ Tokenization completed!"
+echo ""
+
+# ============================================================================
+# Step 2: Run Training (Multi-GPU with torchrun)
+# ============================================================================
+
+echo "========================================================================"
+echo "Step 2: Training (multi-GPU)..."
+echo "========================================================================"
 
 # Find available port
 MASTER_PORT=${MASTER_PORT:-29500}
@@ -207,6 +234,7 @@ torchrun \
     --logging_steps 10 \
     --save_steps 500 \
     --save_total_limit 3 \
+    --skip_tokenization \
     $WANDB_ARGS
 
 echo "========================================================================"
