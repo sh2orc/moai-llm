@@ -78,7 +78,6 @@ WANDB_RUN_NAME=${WANDB_RUN_NAME:-"pretrain-${CONFIG_SIZE}-$(date +%Y%m%d-%H%M%S)
 DATASETS=(
     "BCCard/BCCard-Finance-Kor-QnA"
     "sh2orc/bccard-maywell-jojo0217-markai-lcw99-kendamarron-microsoft"
-    "nvidia/Nemotron-CC-Math-v1:3"
     "nvidia/OpenCodeGeneticInstruct:qwen2.5-32b-instruct"
     "BCCard/BCAI-Finance-Kor-1862K"
     "HAERAE-HUB/KOREAN-WEBTEXT"
