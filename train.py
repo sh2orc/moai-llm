@@ -800,6 +800,9 @@ def tokenize_dataset(
     if packing:
         # Packing 모드: truncation 없이 토큰화 (나중에 concatenate)
         def batch_tokenize(examples):
+            # datasets.map()이 TOKENIZERS_PARALLELISM을 false로 재설정하므로
+            # 매 배치마다 true로 재설정 (Rust 병렬 처리 활성화)
+            os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
             return tokenizer(
                 examples[text_column],
                 truncation=False,
@@ -809,6 +812,9 @@ def tokenize_dataset(
     else:
         # 일반 모드: truncation 적용
         def batch_tokenize(examples):
+            # datasets.map()이 TOKENIZERS_PARALLELISM을 false로 재설정하므로
+            # 매 배치마다 true로 재설정 (Rust 병렬 처리 활성화)
+            os.environ[ENV_TOKENIZERS_PARALLELISM] = "true"
             return tokenizer(
                 examples[text_column],
                 truncation=True,
