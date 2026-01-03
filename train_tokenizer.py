@@ -1,5 +1,5 @@
 """
-토크나이저 학습 스크립트 (HuggingFace Tokenizers - Rust 기반, 초고속)
+토크나이저 학습 스크립트 (HuggingFace Tokenizers)
 
 사용법:
     # Step 1: 다국어 64K

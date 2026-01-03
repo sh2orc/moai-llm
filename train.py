@@ -46,130 +46,370 @@ python train.py \
         --output_dir outputs/sft
 """
 
+# ============================================================================
+# Constants and Configuration
+# ============================================================================
+
+# Timeout settings (seconds)
+IMPORT_SYNC_TIMEOUT = 300  # 5 minutes for import synchronization
+TOKENIZATION_TIMEOUT = 7200  # 2 hours for tokenization
+DATASET_PROCESSING_TIMEOUT = 3600  # 1 hour for dataset processing
+CHECK_INTERVAL = 5  # seconds between checks
+
+# Dataset size thresholds
+DATASET_SIZE_LARGE = 5_000_000  # 5M+ samples
+DATASET_SIZE_MEDIUM = 1_000_000  # 1M-5M samples
+
+# Tokenization settings
+MIN_CHUNK_LENGTH = 128  # Minimum tokens per chunk
+WARMUP_STEPS_FIRST_STAGE = 2000  # For first training stage
+WARMUP_STEPS_RESUME = 100  # For resumed training
+
+# Default batch sizes
+BATCH_SIZE_LARGE_DATASET = 5000
+BATCH_SIZE_DEFAULT = 10000
+WRITER_BATCH_SIZE = 50000
+
+# Default process counts
+DEFAULT_NUM_PROC = 48
+FILTER_NUM_PROC_DIVISOR = 2  # num_proc // 2 for filtering
+MAX_FILTER_NUM_PROC = 4
+
+# Performance settings
+ESTIMATED_TOKENIZATION_SPEED = 2000  # samples/sec per process
+WARMUP_TEXT_PATTERN = "Hello world " * 100
+WARMUP_TEXT_COUNT = 10
+
+# Environment variable keys
+ENV_RANK = "RANK"
+ENV_WORLD_SIZE = "WORLD_SIZE"
+ENV_LOCAL_RANK = "LOCAL_RANK"
+ENV_HF_HOME = "HF_HOME"
+ENV_XDG_CACHE_HOME = "XDG_CACHE_HOME"
+ENV_DATASET_NUM_PROC = "DATASET_NUM_PROC"
+ENV_DATASET_BATCH_SIZE = "DATASET_BATCH_SIZE"
+ENV_DATASET_WRITER_BATCH_SIZE = "DATASET_WRITER_BATCH_SIZE"
+ENV_TOKENIZERS_PARALLELISM = "TOKENIZERS_PARALLELISM"
+
+
+# ============================================================================
 # Early initialization
+# ============================================================================
+
 import os
 import sys
 import time as time_module
 from pathlib import Path as PathType
 
 # Check rank early
-rank = int(os.environ.get("RANK", 0))
-world_size = int(os.environ.get("WORLD_SIZE", 1))
+rank = int(os.environ.get(ENV_RANK, 0))
+world_size = int(os.environ.get(ENV_WORLD_SIZE, 1))
 is_main = (rank == 0)
 
 # 동기화 마커 파일
 import_marker = PathType("/tmp/.moai_import_done")
 
+
+def _import_all_modules():
+    """공통 import 로직 (중복 제거)"""
+    import argparse
+    import hashlib
+    import time
+    import gc
+    import logging
+    from pathlib import Path
+    from typing import Optional, Dict, Any
+
+    try:
+        import orjson as json
+    except ImportError:
+        import json
+
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+
+    import torch
+    from transformers import (
+        AutoTokenizer,
+        Trainer,
+        TrainingArguments,
+        DataCollatorForLanguageModeling,
+    )
+    from datasets import load_dataset, disable_caching
+    import datasets
+    datasets.config.IN_MEMORY_MAX_SIZE = 0
+    from moai_llm.config import MoaiConfig
+    from moai_llm.modeling.model import MoaiForCausalLM
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+    logger = logging.getLogger(__name__)
+
+    # Return all imports as a dict for global namespace injection
+    return {
+        'argparse': argparse, 'hashlib': hashlib, 'time': time, 'gc': gc,
+        'logging': logging, 'Path': Path, 'Optional': Optional, 'Dict': Dict, 'Any': Any,
+        'json': json, 'psutil': psutil, 'torch': torch,
+        'AutoTokenizer': AutoTokenizer, 'Trainer': Trainer,
+        'TrainingArguments': TrainingArguments,
+        'DataCollatorForLanguageModeling': DataCollatorForLanguageModeling,
+        'load_dataset': load_dataset, 'disable_caching': disable_caching,
+        'datasets': datasets, 'MoaiConfig': MoaiConfig,
+        'MoaiForCausalLM': MoaiForCausalLM, 'logger': logger,
+    }
+
+
+# Import synchronization
 if is_main:
     # Rank 0: 먼저 import
     print(f"[IMPORT] Rank 0: Importing modules (world_size={world_size})...", flush=True)
-    sys.stdout.flush()
-    
+
     # 이전 마커 제거
     if import_marker.exists():
         import_marker.unlink()
-    
-    import argparse
-    import hashlib
-    import time
-    import gc
-    import logging
-    from pathlib import Path
-    from typing import Optional, Dict, Any
-    
-    try:
-        import orjson as json
-    except ImportError:
-        import json
-    
-    try:
-        import psutil
-    except ImportError:
-        psutil = None
-    
-    print(f"[IMPORT] Rank 0: Importing torch...", flush=True)
-    sys.stdout.flush()
-    import torch
-    
-    print(f"[IMPORT] Rank 0: Importing transformers...", flush=True)
-    sys.stdout.flush()
-    from transformers import (
-        AutoTokenizer,
-        Trainer,
-        TrainingArguments,
-        DataCollatorForLanguageModeling,
-    )
-    
-    print(f"[IMPORT] Rank 0: Importing datasets...", flush=True)
-    sys.stdout.flush()
-    from datasets import load_dataset, disable_caching
-    import datasets
-    datasets.config.IN_MEMORY_MAX_SIZE = 0
-    
-    print(f"[IMPORT] Rank 0: Importing moai_llm...", flush=True)
-    sys.stdout.flush()
-    from moai_llm.config import MoaiConfig
-    from moai_llm.modeling.model import MoaiForCausalLM
-    
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
-    logger = logging.getLogger(__name__)
-    
+
+    _modules = _import_all_modules()
+    globals().update(_modules)
+
     # 마커 생성 (다른 rank들이 import 시작 가능)
     import_marker.touch()
     print(f"[IMPORT] Rank 0: ✅ All modules imported!", flush=True)
-    sys.stdout.flush()
 else:
     # 다른 rank들: 마커 대기
     print(f"[IMPORT] Rank {rank}: Waiting for rank 0...", flush=True)
-    sys.stdout.flush()
-    
-    max_wait = 300  # 5분
+
     waited = 0
-    while not import_marker.exists() and waited < max_wait:
+    while not import_marker.exists() and waited < IMPORT_SYNC_TIMEOUT:
         time_module.sleep(0.5)
         waited += 0.5
-    
+
     if not import_marker.exists():
         print(f"[IMPORT] Rank {rank}: Timeout waiting for rank 0!", flush=True)
         sys.exit(1)
-    
+
     # 이제 안전하게 import
-    import argparse
-    import hashlib
-    import time
-    import gc
-    import logging
-    from pathlib import Path
-    from typing import Optional, Dict, Any
-    
-    try:
-        import orjson as json
-    except ImportError:
-        import json
-    
-    try:
-        import psutil
-    except ImportError:
-        psutil = None
-    
-    import torch
-    from transformers import (
-        AutoTokenizer,
-        Trainer,
-        TrainingArguments,
-        DataCollatorForLanguageModeling,
-    )
-    from datasets import load_dataset, disable_caching
-    import datasets
-    datasets.config.IN_MEMORY_MAX_SIZE = 0
-    from moai_llm.config import MoaiConfig
-    from moai_llm.modeling.model import MoaiForCausalLM
-    
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
-    logger = logging.getLogger(__name__)
-    
+    _modules = _import_all_modules()
+    globals().update(_modules)
+
     print(f"[IMPORT] Rank {rank}: ✅ Modules imported!", flush=True)
-    sys.stdout.flush()
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+def get_ddp_info() -> Dict[str, Any]:
+    """
+    DDP 환경 정보를 반환합니다.
+
+    Returns:
+        dict: rank, world_size, is_distributed, is_main_process 포함
+    """
+    rank = int(os.environ.get(ENV_RANK, -1))
+    world_size = int(os.environ.get(ENV_WORLD_SIZE, -1))
+
+    is_distributed = rank >= 0 and world_size > 1
+
+    # torch.distributed로 다시 확인
+    if not is_distributed and torch.distributed.is_available():
+        try:
+            if torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+                world_size = torch.distributed.get_world_size()
+                is_distributed = True
+        except (RuntimeError, ValueError, AttributeError):
+            pass
+
+    return {
+        'rank': rank if rank >= 0 else 0,
+        'world_size': world_size if world_size > 0 else 1,
+        'is_distributed': is_distributed,
+        'is_main_process': rank == 0 if rank >= 0 else True,
+    }
+
+
+def ddp_barrier():
+    """안전한 DDP barrier 호출"""
+    try:
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+    except (RuntimeError, ValueError, AttributeError):
+        pass
+
+
+def get_cache_home() -> str:
+    """캐시 홈 디렉토리 반환"""
+    return os.environ.get(
+        ENV_HF_HOME,
+        os.environ.get(ENV_XDG_CACHE_HOME, os.path.expanduser("~/.cache/huggingface"))
+    )
+
+
+def create_cache_path(name: str, suffix: str = "") -> Path:
+    """
+    캐시 경로 생성
+
+    Args:
+        name: 데이터셋 이름 또는 식별자
+        suffix: 경로 접미사 (예: "_tokenized", "_final")
+
+    Returns:
+        Path: 캐시 경로
+    """
+    cache_hash = hashlib.md5(name.encode()).hexdigest()[:16]
+    cache_home = get_cache_home()
+    return Path(cache_home) / "datasets" / f"{cache_hash}{suffix}"
+
+
+def wait_for_marker(marker_path: Path, timeout: int = TOKENIZATION_TIMEOUT,
+                   check_interval: int = CHECK_INTERVAL, rank: int = 0) -> bool:
+    """
+    마커 파일이 생성될 때까지 대기
+
+    Args:
+        marker_path: 마커 파일 경로
+        timeout: 최대 대기 시간 (초)
+        check_interval: 체크 간격 (초)
+        rank: 현재 rank (로깅용)
+
+    Returns:
+        bool: 성공 여부
+    """
+    import time
+    waited = 0
+    while not marker_path.exists() and waited < timeout:
+        time.sleep(check_interval)
+        waited += check_interval
+        if waited % 60 == 0:  # 1분마다 로그
+            logger.info(f"[Rank {rank}] Still waiting... ({waited}s elapsed)")
+
+    return marker_path.exists()
+
+
+def log_with_rank(msg: str, rank: int = None, is_main: bool = None):
+    """
+    Rank 정보와 함께 로깅
+
+    Args:
+        msg: 로그 메시지
+        rank: Rank 번호 (None이면 자동 감지)
+        is_main: Main process 여부 (None이면 자동 감지)
+    """
+    if rank is None or is_main is None:
+        ddp_info = get_ddp_info()
+        rank = ddp_info['rank']
+        is_main = ddp_info['is_main_process']
+
+    if is_main:
+        logger.info(msg)
+    else:
+        logger.info(f"[Rank {rank}] {msg}")
+
+
+def calculate_optimal_num_proc(total_samples: int, cpu_count: int, available_memory: int = None) -> int:
+    """
+    CPU, 메모리, 데이터 크기를 고려한 최적 프로세스 수 계산
+
+    Args:
+        total_samples: 총 샘플 수
+        cpu_count: CPU 코어 수
+        available_memory: 사용 가능한 메모리 (bytes), None이면 자동 감지
+
+    Returns:
+        최적 프로세스 수
+    """
+    # 메모리 기반 제한
+    if available_memory is None:
+        if psutil:
+            available_memory = psutil.virtual_memory().available
+        else:
+            available_memory = 16 * 1024**3  # 16GB 기본값
+
+    # 프로세스당 약 2GB 메모리 사용 가정
+    estimated_memory_per_proc = 2 * 1024**3
+    max_proc_by_memory = max(1, available_memory // estimated_memory_per_proc)
+
+    # CPU 기반 제한 (시스템용 2 코어 유지)
+    max_proc_by_cpu = max(1, cpu_count - 2)
+
+    # 데이터 크기 기반 최적화
+    if total_samples > DATASET_SIZE_LARGE:
+        # 대규모: 안정성 우선
+        optimal_proc = min(8, max_proc_by_memory, max_proc_by_cpu)
+    elif total_samples > DATASET_SIZE_MEDIUM:
+        # 중규모: 균형
+        optimal_proc = min(16, max_proc_by_memory, max_proc_by_cpu)
+    else:
+        # 소규모: 속도 우선
+        optimal_proc = min(32, max_proc_by_memory, max_proc_by_cpu)
+
+    return optimal_proc
+
+
+def get_tokenization_env_config() -> Dict[str, int]:
+    """토크나이제이션 관련 환경 변수 설정 반환"""
+    cpu_count = os.cpu_count() or 8
+    return {
+        'num_proc': int(os.getenv(ENV_DATASET_NUM_PROC, min(DEFAULT_NUM_PROC, cpu_count))),
+        'batch_size': int(os.getenv(ENV_DATASET_BATCH_SIZE, BATCH_SIZE_DEFAULT // 10)),
+        'writer_batch_size': int(os.getenv(ENV_DATASET_WRITER_BATCH_SIZE, BATCH_SIZE_DEFAULT)),
+    }
+
+
+def get_optimal_num_shards(dataset_size: int, cpu_count: int) -> int:
+    """
+    데이터셋 크기와 CPU 코어 수에 따른 최적 shard 수 계산
+
+    Args:
+        dataset_size: 데이터셋 샘플 수
+        cpu_count: CPU 코어 수
+
+    Returns:
+        최적 shard 수 (8-64 사이)
+    """
+    # CPU 코어의 절반을 기준으로, 최소 8, 최대 64
+    base_shards = max(8, cpu_count // 2)
+
+    # 대용량 데이터셋은 더 많은 shard 사용
+    if dataset_size > DATASET_SIZE_LARGE:
+        return min(64, base_shards * 2)
+    elif dataset_size > DATASET_SIZE_MEDIUM:
+        return min(48, base_shards)
+    else:
+        return min(32, base_shards)
+
+
+def get_optimal_prefetch_factor(gpu_memory_gb: float = None, batch_size: int = 4) -> int:
+    """
+    GPU 메모리에 따른 최적 prefetch factor 계산
+
+    Args:
+        gpu_memory_gb: GPU 메모리 크기 (GB), None이면 자동 감지
+        batch_size: 배치 크기
+
+    Returns:
+        최적 prefetch factor (2-8 사이)
+    """
+    if gpu_memory_gb is None:
+        try:
+            if torch.cuda.is_available():
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            else:
+                gpu_memory_gb = 16  # CPU 모드 기본값
+        except:
+            gpu_memory_gb = 16
+
+    # GPU 메모리 크기에 따른 최적 prefetch
+    # 40GB+ GPU (A100): 8, 24GB (RTX 3090/4090): 6, 16GB: 4, 그 외: 2
+    if gpu_memory_gb >= 40:
+        return 8
+    elif gpu_memory_gb >= 24:
+        return 6
+    elif gpu_memory_gb >= 16:
+        return 4
+    else:
+        return 2
 
 
 # ============================================================================
@@ -184,74 +424,65 @@ def concatenate_sequences(
     """
     여러 시퀀스를 연결하여 max_seq_length 청크로 분할합니다.
     각 원본 시퀀스 끝에 EOS 토큰을 삽입하여 문서 경계를 표시합니다.
-    
-    이렇게 하면 max_seq_length로 잘리더라도 다음 청크에서 
-    이어서 EOS까지 온전히 학습할 수 있습니다.
-    
+
     Args:
         tokenized_sequences: 토큰화된 시퀀스 리스트 (각각 input_ids 포함)
         max_seq_length: 최대 시퀀스 길이
         eos_token_id: EOS 토큰 ID
-    
+
     Returns:
         연결 후 max_seq_length로 분할된 시퀀스 리스트
     """
     import numpy as np
-    
-    # 1. 총 길이 계산 (메모리 미리 할당용)
-    total_len = 0
-    for seq in tokenized_sequences:
-        input_ids = seq["input_ids"]
-        total_len += len(input_ids)
-        if len(input_ids) > 0 and input_ids[-1] != eos_token_id:
-            total_len += 1  # EOS 추가될 예정
-    
-    logger.info(f"📦 Concatenating {len(tokenized_sequences):,} sequences into ~{total_len:,} tokens")
-    
-    # 2. numpy 배열로 빠르게 연결 (메모리 효율적)
-    all_tokens = np.empty(total_len, dtype=np.int32)
+
+    # 1. 총 길이 추정 (over-estimate to avoid reallocation)
+    estimated_len = sum(len(seq["input_ids"]) + 1 for seq in tokenized_sequences)
+    logger.info(f"📦 Concatenating {len(tokenized_sequences):,} sequences (~{estimated_len:,} tokens)")
+
+    # 2. 한 번의 루프로 numpy 배열 구축 (최적화)
+    all_tokens = np.empty(estimated_len, dtype=np.int32)
     offset = 0
-    
+
     for seq in tokenized_sequences:
         input_ids = seq["input_ids"]
         seq_len = len(input_ids)
-        
+
         if seq_len == 0:
             continue
-            
-        # 배열에 복사
+
+        # 시퀀스 복사 및 EOS 추가를 한 번에
         all_tokens[offset:offset + seq_len] = input_ids
         offset += seq_len
-        
-        # EOS 추가
+
+        # EOS 추가 (필요한 경우만)
         if input_ids[-1] != eos_token_id:
             all_tokens[offset] = eos_token_id
             offset += 1
-    
+
     # 실제 사용된 길이로 자르기
     all_tokens = all_tokens[:offset]
-    
-    # 3. max_seq_length 청크로 분할 (list comprehension으로 빠르게)
+
+    # 3. max_seq_length 청크로 분할
     num_chunks = (len(all_tokens) + max_seq_length - 1) // max_seq_length
     chunks = []
-    
+
     for i in range(num_chunks):
         start = i * max_seq_length
         end = min(start + max_seq_length, len(all_tokens))
-        chunk = all_tokens[start:end].tolist()
-        
-        # 마지막 청크가 너무 짧으면 (< 128) 버림
-        if len(chunk) < 128:
-            logger.info(f"  Dropping short final chunk of {len(chunk)} tokens")
-            continue
-            
-        chunks.append({
-            "input_ids": chunk,
-            "attention_mask": [1] * len(chunk),
-        })
-    
-    logger.info(f"✓ Created {len(chunks):,} chunks of max {max_seq_length} tokens each")
+        chunk_len = end - start
 
+        # 마지막 청크가 너무 짧으면 버림
+        if chunk_len < MIN_CHUNK_LENGTH:
+            logger.info(f"  Dropping short final chunk of {chunk_len} tokens")
+            continue
+
+        # numpy 배열을 직접 사용 (메모리 복사 최소화)
+        chunks.append({
+            "input_ids": all_tokens[start:end].copy(),  # numpy array
+            "attention_mask": np.ones(chunk_len, dtype=np.int8),  # int8로 메모리 절약
+        })
+
+    logger.info(f"✓ Created {len(chunks):,} chunks of max {max_seq_length} tokens each")
     return chunks
 
 
@@ -351,9 +582,10 @@ def tokenize_all_datasets(
                     tokenized_dataset = tokenized_ds
 
                 logger.info(f"  💾 Saving tokenized dataset...")
-                tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
+                num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
+                tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
                 tokenized_marker.touch()
-                logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples")
+                logger.info(f"  ✅ Tokenized: {len(tokenized_dataset):,} samples (shards={num_shards})")
 
             tokenized_datasets_info.append({
                 'name': src_name,
@@ -423,7 +655,7 @@ def tokenize_dataset(
     핵심 최적화:
     - TOKENIZERS_PARALLELISM=false + num_proc=N (멀티프로세싱)
     - 각 프로세스가 독립적으로 Fast Tokenizer 실행 = 최대 병렬화
-    - batch_size=50000 (IPC 오버헤드 최소화)
+    - batch_size 자동 조정 (IPC 오버헤드 최소화)
 
     Args:
         dataset: HuggingFace Dataset 객체
@@ -442,35 +674,27 @@ def tokenize_dataset(
     cpu_count = multiprocessing.cpu_count()
 
     # 데이터셋 크기에 따라 최적 프로세스 수 자동 결정
-    # 대규모 데이터셋: 적은 프로세스 = 안정성 + 메모리 절약
-    # 소규모 데이터셋: 많은 프로세스 = 속도 우선
     if num_proc is None:
-        env_num_proc = os.getenv("DATASET_NUM_PROC")
+        env_num_proc = os.getenv(ENV_DATASET_NUM_PROC)
         if env_num_proc:
             num_proc = int(env_num_proc)
-        elif total_samples > 5_000_000:
-            num_proc = 8   # 대규모 (500만+): 안정성 우선
-        elif total_samples > 1_000_000:
-            num_proc = 16  # 중규모 (100만~500만)
         else:
-            num_proc = min(32, cpu_count)  # 소규모: 속도 우선
+            # CPU, 메모리, 데이터 크기를 고려한 최적 프로세스 수 계산
+            num_proc = calculate_optimal_num_proc(total_samples, cpu_count)
 
     # 배치 크기도 데이터셋 크기에 따라 조절
-    if total_samples > 5_000_000:
-        batch_size = 5000   # 대규모: 더 자주 진행률 표시
-    else:
-        batch_size = 10000
-    writer_batch_size = 50000
+    batch_size = BATCH_SIZE_LARGE_DATASET if total_samples > DATASET_SIZE_LARGE else BATCH_SIZE_DEFAULT
+    writer_batch_size = WRITER_BATCH_SIZE
 
     # 핵심: 멀티프로세싱 사용 시 반드시 false (CPU 쓰레싱 방지)
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ[ENV_TOKENIZERS_PARALLELISM] = "false"
 
     # Fast Tokenizer 확인
     if not tokenizer.is_fast:
         logger.warning("⚠️ WARNING: Slow tokenizer detected! 10-50x slower expected.")
 
-    # 예상 시간 계산 (보수적 추정)
-    estimated_speed = num_proc * 2000  # 코드/긴 텍스트는 느림
+    # 예상 시간 계산
+    estimated_speed = num_proc * ESTIMATED_TOKENIZATION_SPEED
     estimated_time = total_samples / estimated_speed / 60
 
     logger.info(f"🔤 Tokenization config:")
@@ -537,19 +761,14 @@ def tokenize_non_sequential_dataset(tokenizer, args):
     import gc
     from datasets import Dataset as HFDataset
 
-    rank = int(os.environ.get("RANK", 0))
-    is_main_process = rank == 0
+    ddp_info = get_ddp_info()
+    rank = ddp_info['rank']
+    is_main_process = ddp_info['is_main_process']
 
     # ----------------------------------------------------------------
     # 1. 데이터셋 로드
     # ----------------------------------------------------------------
-    if is_main_process:
-        logger.info("📚 [Rank 0] Loading datasets...")
-        sys.stdout.flush()
-    else:
-        logger.info(f"📚 [Rank {rank}] Waiting for rank 0 to complete data processing...")
-        sys.stdout.flush()
-
+    log_with_rank("📚 Loading datasets...", rank, is_main_process)
     load_start = time.time()
 
     if args.mode == "pretrain":
@@ -568,19 +787,14 @@ def tokenize_non_sequential_dataset(tokenizer, args):
         )
 
     load_time = time.time() - load_start
-    if is_main_process:
-        logger.info(f"✅ [Rank 0] Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples")
-    else:
-        logger.info(f"✅ [Rank {rank}] Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples")
+    log_with_rank(f"✅ Dataset loaded in {load_time:.1f}s: {len(dataset['train']):,} samples", rank, is_main_process)
 
     # ----------------------------------------------------------------
     # 2. 토크나이징 캐시 경로 설정
     # ----------------------------------------------------------------
-    cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
     dataset_names_str = "_".join(args.dataset) if args.dataset else "local"
-    dataset_hash = hashlib.md5(dataset_names_str.encode()).hexdigest()[:16]
-    tokenized_cache_path = Path(cache_home) / "datasets" / f"{dataset_hash}_tokenized"
-    tokenized_marker = Path(cache_home) / "datasets" / f".{dataset_hash}_tokenized.marker"
+    tokenized_cache_path = create_cache_path(dataset_names_str, "_tokenized")
+    tokenized_marker = Path(str(tokenized_cache_path).replace("_tokenized", ".tokenized.marker"))
 
     # ----------------------------------------------------------------
     # 3. 토크나이징 수행 (Rank 0만) 또는 캐시에서 로드
@@ -590,22 +804,15 @@ def tokenize_non_sequential_dataset(tokenizer, args):
 
         # 토크나이저 워밍업
         logger.info("🔥 Warming up tokenizer...")
-        warmup_texts = ["Hello world " * 100] * 10
+        warmup_texts = [WARMUP_TEXT_PATTERN] * WARMUP_TEXT_COUNT
         _ = tokenizer(warmup_texts, truncation=False, padding=False)
         logger.info("✅ Tokenizer warmed up")
 
     # 캐시 확인 및 로드
     if tokenized_cache_path.exists() and tokenized_marker.exists():
-        # 캐시가 있으면 모든 rank가 로드
-        if is_main_process:
-            logger.info(f"✅ [Rank 0] Loading cached tokenized dataset from: {tokenized_cache_path}")
-        else:
-            logger.info(f"✅ [Rank {rank}] Loading cached tokenized dataset from: {tokenized_cache_path}")
+        log_with_rank(f"✅ Loading cached tokenized dataset from: {tokenized_cache_path}", rank, is_main_process)
         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
-        if is_main_process:
-            logger.info(f"✅ [Rank 0] Loaded {len(tokenized_dataset):,} samples from cache")
-        else:
-            logger.info(f"✅ [Rank {rank}] Loaded {len(tokenized_dataset):,} samples from cache")
+        log_with_rank(f"✅ Loaded {len(tokenized_dataset):,} samples from cache", rank, is_main_process)
     elif is_main_process:
         # Rank 0만 토크나이징 수행
         tokenized_ds = tokenize_dataset(
@@ -639,21 +846,14 @@ def tokenize_non_sequential_dataset(tokenizer, args):
 
         # 캐시 저장 (rank 0만)
         logger.info(f"💾 [Rank 0] Saving tokenized dataset to: {tokenized_cache_path}")
-        tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=8)
+        num_shards = get_optimal_num_shards(len(tokenized_dataset), os.cpu_count() or 8)
+        tokenized_dataset.save_to_disk(str(tokenized_cache_path), num_shards=num_shards)
         tokenized_marker.touch()
-        logger.info(f"✅ [Rank 0] Tokenized and saved: {len(tokenized_dataset):,} samples")
+        logger.info(f"✅ [Rank 0] Tokenized and saved: {len(tokenized_dataset):,} samples (shards={num_shards})")
     else:
         # 다른 rank들은 마커 대기 후 로드
-        max_wait = 7200  # 최대 2시간
-        waited = 0
-        while not tokenized_marker.exists() and waited < max_wait:
-            time.sleep(5)
-            waited += 5
-            if waited % 60 == 0:
-                logger.info(f"  [Rank {rank}] Still waiting for rank 0... ({waited}s)")
-
-        if not tokenized_marker.exists():
-            raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {max_wait}s")
+        if not wait_for_marker(tokenized_marker, TOKENIZATION_TIMEOUT, CHECK_INTERVAL, rank):
+            raise TimeoutError(f"Rank {rank}: Tokenizing timeout after {TOKENIZATION_TIMEOUT}s")
 
         logger.info(f"📥 [Rank {rank}] Loading tokenized dataset from: {tokenized_cache_path}")
         tokenized_dataset = HFDataset.load_from_disk(str(tokenized_cache_path))
@@ -704,47 +904,18 @@ def _load_single_file(file_path: str) -> list:
 def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     """
     단일 HuggingFace 데이터셋을 로드하여 텍스트 리스트로 반환
-    
+
     데이터셋 이름에 config를 포함할 수 있음:
         - "dataset_name:config_name" 형식 지원
         - 예: "maywell/korean_textbooks:claude_evol"
-    
+
     DDP 환경에서는 rank 0만 데이터셋을 다운로드하고, 다른 프로세스는 대기합니다.
     """
-    # DDP 환경 확인 (환경 변수 사용 - Trainer 초기화 전에도 작동)
-    try:
-        # 환경 변수로 rank 확인 (torchrun이 설정)
-        local_rank = int(os.environ.get("LOCAL_RANK", -1))
-        rank = int(os.environ.get("RANK", -1))
-        world_size = int(os.environ.get("WORLD_SIZE", -1))
-        
-        # distributed가 초기화되었는지 확인
-        is_distributed = False
-        is_main_process = True
-        
-        # 환경 변수로 distributed 여부 확인
-        if rank >= 0 and world_size > 1:
-            is_distributed = True
-            is_main_process = rank == 0
-        elif torch.distributed.is_available():
-            # torch.distributed가 초기화되었는지 확인
-            try:
-                if torch.distributed.is_initialized():
-                    is_distributed = True
-                    is_main_process = torch.distributed.get_rank() == 0
-            except (AttributeError, RuntimeError, ValueError):
-                pass
-    except (AttributeError, RuntimeError, ValueError):
-        is_distributed = False
-        is_main_process = True
-    
-    # rank 변수 보존 (로깅용)
-    try:
-        current_rank = rank if 'rank' in locals() and rank >= 0 else (
-            torch.distributed.get_rank() if is_distributed and torch.distributed.is_initialized() else 0
-        )
-    except (AttributeError, RuntimeError, ValueError):
-        current_rank = 0
+    # DDP 환경 정보 가져오기
+    ddp_info = get_ddp_info()
+    is_distributed = ddp_info['is_distributed']
+    is_main_process = ddp_info['is_main_process']
+    current_rank = ddp_info['rank']
     
     # dataset_name:config_name 형식 파싱
     if ":" in dataset_name:
@@ -764,42 +935,28 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
     # DDP 환경에서는 rank 0만 데이터셋을 다운로드 및 변환
     # 다른 rank들은 최종 변환 결과만 로드
     if is_distributed:
-        # Path import (함수 내부에서 사용하기 위해)
-        from pathlib import Path as PathLib
-        # 먼저 최종 데이터셋이 이미 존재하는지 확인
-        cache_home = os.environ.get("HF_HOME", os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache/huggingface")))
-        cache_hash = hashlib.md5(f"{dataset_name}_{dataset_config}".encode()).hexdigest()[:16]
-        dataset_save_path = PathLib(cache_home) / "datasets" / f"{cache_hash}_final"
-        filter_marker_path = PathLib(cache_home) / "datasets" / f".{cache_hash}_filtered.marker"
-        
+        # 캐시 경로 생성
+        cache_key = f"{dataset_name}_{dataset_config}" if dataset_config else dataset_name
+        dataset_save_path = create_cache_path(cache_key, "_final")
+        filter_marker_path = Path(str(dataset_save_path).replace("_final", ".filtered.marker"))
+
         # 이미 처리된 데이터셋이 있으면 모든 rank가 로드 (재시작 시 안전)
         if dataset_save_path.exists() and filter_marker_path.exists():
             logger.info(f"    [Rank {current_rank}] ✅ Using existing processed dataset from: {dataset_save_path}")
             from datasets import Dataset
-            import time
             load_start = time.time()
             converted = Dataset.load_from_disk(str(dataset_save_path))
             load_time = time.time() - load_start
             logger.info(f"    [Rank {current_rank}] Loaded {len(converted):,} samples in {load_time:.1f}s")
-            
+
             # barrier 동기화
-            try:
-                if torch.distributed.is_initialized():
-                    torch.distributed.barrier()
-            except (RuntimeError, ValueError, AttributeError):
-                pass
-            
+            ddp_barrier()
+
             # 변환 결과 반환 (나머지 로직 건너뛰기)
             return converted
-        
-        # barrier는 distributed가 완전히 초기화된 후에만 사용
-        try:
-            if torch.distributed.is_initialized():
-                # 모든 프로세스가 동기화 지점에 도달할 때까지 대기
-                torch.distributed.barrier()
-        except (RuntimeError, ValueError, AttributeError):
-            # barrier 실패 시 환경 변수만으로 동기화 (rank 0만 다운로드)
-            pass
+
+        # barrier 동기화
+        ddp_barrier()
         
         if is_main_process:
             # rank 0만 데이터셋 다운로드 및 변환
@@ -839,19 +996,16 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         return {"text": texts}
     
     # 배치 처리로 변환 (병렬 처리 유지, 메모리 효율적)
-    # 환경 변수로 조정 가능한 최적화 파라미터
-    # 높은 num_proc = 각 프로세스가 독립적으로 토크나이저 실행 → 빠름!
-    dataset_num_proc = int(os.getenv("DATASET_NUM_PROC", min(48, os.cpu_count() or 8)))
-    dataset_batch_size = int(os.getenv("DATASET_BATCH_SIZE", 1000))
-    dataset_writer_batch_size = int(os.getenv("DATASET_WRITER_BATCH_SIZE", 10000))
-    
+    env_config = get_tokenization_env_config()
+    dataset_num_proc = env_config['num_proc']
+    dataset_batch_size = env_config['batch_size']
+    dataset_writer_batch_size = env_config['writer_batch_size']
+
     # DDP 환경에서는 rank 0만 변환하고 다른 프로세스는 캐시만 로드
     if is_distributed:
         # 캐시 완료 마커 파일 경로 생성
-        cache_home = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-        config_str = f"{dataset_name}_{dataset_config}" if dataset_config else dataset_name
-        cache_hash = hashlib.md5(config_str.encode()).hexdigest()[:16]
-        cache_marker = PathLib(cache_home) / "datasets" / f".{cache_hash}_converted.marker"
+        cache_key = f"{dataset_name}_{dataset_config}" if dataset_config else dataset_name
+        cache_marker = Path(str(create_cache_path(cache_key, "")).replace(cache_key[:16], f".{cache_key[:16]}_converted.marker"))
         
         if is_main_process:
             # rank 0만 데이터셋 변환 (멀티프로세스로 빠르게)
@@ -875,96 +1029,67 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
             logger.info(f"    [Rank 0] Created conversion marker: {cache_marker}")
             
             # 빈 텍스트 필터링 (병렬 처리로 빠르게)
-            filter_num_proc = min(dataset_num_proc // 2, 4)
+            filter_num_proc = min(dataset_num_proc // FILTER_NUM_PROC_DIVISOR, MAX_FILTER_NUM_PROC)
             logger.info(f"    [Rank 0] Filtering empty texts with {filter_num_proc} processes...")
             converted = converted.filter(
-                lambda x: len(x["text"]) > 0, 
-                num_proc=filter_num_proc,  # 병렬 처리로 빠르게
+                lambda x: len(x["text"]) > 0,
+                num_proc=filter_num_proc,
                 writer_batch_size=dataset_writer_batch_size,
                 keep_in_memory=False,
-                load_from_cache_file=True,  # 캐시 활용
+                load_from_cache_file=True,
             )
-            
+
             logger.info(f"    [Rank 0] Conversion completed: {len(converted):,} samples")
-            
+
             # 최종 결과를 디스크에 저장 (다른 rank들이 안전하게 로드할 수 있도록)
-            dataset_save_path = PathLib(cache_home) / "datasets" / f"{cache_hash}_final"
-            
-            # 이미 저장된 파일이 있으면 건너뛰기 (속도 향상)
-            if dataset_save_path.exists():
-                logger.info(f"    [Rank 0] Dataset already saved at: {dataset_save_path}")
-            else:
+            if not dataset_save_path.exists():
                 logger.info(f"    [Rank 0] Saving final dataset to: {dataset_save_path}")
-                import time
                 save_start = time.time()
-                # num_shards 지정으로 병렬 저장 최적화
+                num_shards = get_optimal_num_shards(len(converted), os.cpu_count() or 8)
                 converted.save_to_disk(
                     str(dataset_save_path),
-                    num_shards=dataset_num_proc,  # 병렬 저장
+                    num_shards=num_shards,
                 )
                 save_time = time.time() - save_start
-                logger.info(f"    [Rank 0] Dataset saved in {save_time:.1f}s")
-            
+                logger.info(f"    [Rank 0] Dataset saved in {save_time:.1f}s (shards={num_shards})")
+            else:
+                logger.info(f"    [Rank 0] Dataset already saved at: {dataset_save_path}")
+
             # 필터 완료 마커 생성
-            filter_marker = PathLib(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
             filter_marker.touch()
             logger.info(f"    [Rank 0] Created filter marker: {filter_marker}")
-            
+
             # 변환 완료 후 barrier
-            try:
-                if torch.distributed.is_initialized():
-                    torch.distributed.barrier()
-            except (RuntimeError, ValueError, AttributeError):
-                import time
-                time.sleep(1)
+            ddp_barrier()
                 
         else:
             # 다른 프로세스는 필터 마커 대기 후 최종 결과만 로드!
-            import time
-            max_wait_time = 3600  # 최대 1시간 대기
-            check_interval = 5
-            
-            # 필터 완료 마커 대기 (변환 마커는 건너뛰고 바로 필터 마커만 확인)
-            filter_marker = PathLib(str(cache_marker).replace("_converted.marker", "_filtered.marker"))
             logger.info(f"    [Rank {current_rank}] Waiting for rank 0 to complete all processing...")
-            waited = 0
-            while not filter_marker.exists() and waited < max_wait_time:
-                time.sleep(check_interval)
-                waited += check_interval
-                if waited % 60 == 0:  # 1분마다 로그
-                    logger.info(f"    [Rank {current_rank}] Still waiting... ({waited}s elapsed)")
-            
-            if not filter_marker.exists():
-                raise TimeoutError(f"Rank {current_rank}: Dataset processing timeout after {max_wait_time}s")
-            
+
+            if not wait_for_marker(filter_marker, DATASET_PROCESSING_TIMEOUT, CHECK_INTERVAL, current_rank):
+                raise TimeoutError(f"Rank {current_rank}: Dataset processing timeout after {DATASET_PROCESSING_TIMEOUT}s")
+
             logger.info(f"    [Rank {current_rank}] Processing complete, loading final result from cache...")
-            
+
             # barrier 동기화
-            try:
-                if torch.distributed.is_initialized():
-                    torch.distributed.barrier()
-            except (RuntimeError, ValueError, AttributeError):
-                time.sleep(2)
-            
-            # rank 0이 저장한 최종 데이터셋을 직접 로드 (캐시 충돌 없음!)
-            dataset_save_path = PathLib(cache_home) / "datasets" / f"{cache_hash}_final"
+            ddp_barrier()
+
+            # rank 0이 저장한 최종 데이터셋을 직접 로드
             logger.info(f"    [Rank {current_rank}] Loading final dataset from: {dataset_save_path}")
-            
+
             # 파일이 완전히 준비될 때까지 짧은 대기 (파일 시스템 동기화)
-            max_attempts = 60  # 최대 60번 시도 (30초)
-            for attempt in range(max_attempts):
+            for attempt in range(60):  # 최대 30초 대기
                 if dataset_save_path.exists() and (dataset_save_path / "dataset_info.json").exists():
                     break
                 time.sleep(0.5)
             else:
                 logger.warning(f"    [Rank {current_rank}] Dataset files not fully ready, proceeding anyway...")
-            
+
             from datasets import Dataset
-            import time
             load_start = time.time()
             converted = Dataset.load_from_disk(str(dataset_save_path))
             load_time = time.time() - load_start
-            
+
             logger.info(f"    [Rank {current_rank}] Loaded from disk in {load_time:.1f}s: {len(converted):,} samples")
             
     else:
@@ -983,11 +1108,11 @@ def _load_hf_dataset(dataset_name: str, dataset_config: Optional[str] = None):
         )
         
         logger.info(f"    Filtering empty texts...")
-        filter_num_proc = min(dataset_num_proc // 2, 4)
+        filter_num_proc = min(dataset_num_proc // FILTER_NUM_PROC_DIVISOR, MAX_FILTER_NUM_PROC)
         converted = converted.filter(
-            lambda x: len(x["text"]) > 0, 
+            lambda x: len(x["text"]) > 0,
             num_proc=filter_num_proc,
-            load_from_cache_file=True,  # 캐시 사용
+            load_from_cache_file=True,
             writer_batch_size=dataset_writer_batch_size,
             keep_in_memory=False,
         )
@@ -1339,7 +1464,6 @@ def train_sequential(tokenized_datasets_info: list, tokenizer, args):
         logger.info("="*80)
         logger.info("🎯 Sequential Training")
         logger.info("="*80)
-    sys.stdout.flush()
 
     # W&B 초기화 (선택적)
     if args.use_wandb:
@@ -1365,7 +1489,6 @@ def train_sequential(tokenized_datasets_info: list, tokenizer, args):
             logger.info(f"🚀 Training [{idx+1}/{len(tokenized_datasets_info)}]: {dataset_info['name']}")
             logger.info(f"   Samples: {dataset_info['num_samples']:,}")
             logger.info("="*80)
-        sys.stdout.flush()
 
         # 모델 로드
         if is_main_process:
@@ -1404,6 +1527,9 @@ def train_sequential(tokenized_datasets_info: list, tokenizer, args):
         # Training Arguments
         stage_output_dir = f"{args.output_dir}/stage_{idx+1}"
 
+        # GPU 최적화 파라미터 계산
+        optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
+
         training_args = TrainingArguments(
             output_dir=stage_output_dir,
             num_train_epochs=args.num_epochs,
@@ -1411,7 +1537,7 @@ def train_sequential(tokenized_datasets_info: list, tokenizer, args):
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             learning_rate=args.learning_rate,
             weight_decay=args.weight_decay,
-            warmup_steps=args.warmup_steps if idx == 0 else 100,
+            warmup_steps=WARMUP_STEPS_FIRST_STAGE if idx == 0 else WARMUP_STEPS_RESUME,
             logging_steps=args.logging_steps,
             save_steps=args.save_steps,
             save_total_limit=2,
@@ -1423,13 +1549,17 @@ def train_sequential(tokenized_datasets_info: list, tokenizer, args):
             report_to=["wandb"] if args.use_wandb else ["tensorboard"],
             max_steps=args.max_steps if args.max_steps > 0 else -1,
             save_safetensors=True,
+            # I/O 최적화
             dataloader_pin_memory=True,
-            dataloader_prefetch_factor=4,
+            dataloader_prefetch_factor=optimal_prefetch,  # GPU 메모리 기반 동적 설정
+            dataloader_persistent_workers=True,  # worker 재사용
             dataloader_drop_last=True,
+            # 옵티마이저 및 정밀도
             optim="adamw_torch_fused",
             ddp_find_unused_parameters=False,
             tf32=True,
-            group_by_length=False,
+            # 배치 최적화
+            group_by_length=not getattr(args, 'packing', False),  # packing 없을 때만 그룹핑
             max_grad_norm=1.0,
             gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
         )
@@ -1492,21 +1622,17 @@ def train_sequential(tokenized_datasets_info: list, tokenizer, args):
 # ============================================================================
 def train(args):
     """메인 학습 함수"""
-
-    import sys
-    sys.stdout.flush()
-
     # DDP 환경 확인
-    rank = int(os.environ.get("RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    is_distributed = world_size > 1
-    is_main_process = rank == 0
+    ddp_info = get_ddp_info()
+    rank = ddp_info['rank']
+    world_size = ddp_info['world_size']
+    is_distributed = ddp_info['is_distributed']
+    is_main_process = ddp_info['is_main_process']
 
     logger.info("="*80)
     logger.info(f"🚀 Starting {args.mode.upper()} training")
     logger.info(f"🌐 Environment: {world_size} GPU(s), Rank {rank}")
     logger.info("="*80)
-    sys.stdout.flush()
 
     # ============================================================================
     # STEP 0: 토크나이저 로드 (DDP 전!)
@@ -1523,7 +1649,6 @@ def train(args):
 
     if is_main_process and tokenizer.is_fast:
         logger.info("✅ Using Fast Tokenizer (Rust-based)")
-    sys.stdout.flush()
 
     # ============================================================================
     # Sequential 모드: 먼저 토크나이징 후 학습
@@ -1605,6 +1730,9 @@ def train(args):
     )
 
     # 5. Training Arguments (최적화 옵션 포함)
+    # GPU 최적화 파라미터 계산
+    optimal_prefetch = get_optimal_prefetch_factor(batch_size=args.batch_size)
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_epochs,
@@ -1625,13 +1753,16 @@ def train(args):
         report_to=["wandb"] if args.use_wandb else ["tensorboard"],
         save_safetensors=True,
         ddp_find_unused_parameters=False,
-        # 추가 최적화 옵션
+        # I/O 최적화
         dataloader_pin_memory=True,  # GPU 전송 속도 향상
-        dataloader_prefetch_factor=4,  # 미리 배치 로드
-        dataloader_drop_last=True,  # 불완전 배치 제거 (속도↑)
+        dataloader_prefetch_factor=optimal_prefetch,  # GPU 메모리 기반 동적 설정
+        dataloader_persistent_workers=True,  # worker 재사용
+        dataloader_drop_last=True,  # 불완전 배치 제거
+        # 옵티마이저 및 정밀도
         optim="adamw_torch_fused",  # Fused Adam (faster)
         tf32=True,  # TF32 사용 (Ampere GPU)
-        group_by_length=False,  # 길이별 그룹핑 비활성화 (packing 사용시)
+        # 배치 최적화
+        group_by_length=not getattr(args, 'packing', False),  # packing 없을 때만 그룹핑
         max_grad_norm=1.0,  # 그래디언트 클리핑
         gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
     )
@@ -1852,18 +1983,16 @@ if __name__ == "__main__":
     import os
     
     # 즉시 출력
-    rank = int(os.environ.get("RANK", -1))
+    rank = int(os.environ.get(ENV_RANK, -1))
     print(f"[INIT] Rank {rank}: Python script started!", flush=True)
-    sys.stdout.flush()
-    
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    world_size = int(os.environ.get(ENV_WORLD_SIZE, 1))
     
     if rank == 0:
         print("="*80, flush=True)
         print("🚀 MOAI-LLM Training Starting...", flush=True)
         print(f"🌐 World size: {world_size} GPUs", flush=True)
         print("="*80, flush=True)
-    
-    sys.stdout.flush()
+
     main()
 
