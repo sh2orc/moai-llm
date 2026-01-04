@@ -1,6 +1,8 @@
 .claude/
 .cursor/
 
+docs/TOKENIZATION_PIPELINE*
+
 # Python
 __pycache__/
 *.py[cod]

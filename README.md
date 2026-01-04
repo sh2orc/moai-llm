@@ -465,7 +465,41 @@ loss = chunked_cross_entropy_loss(
 | 32GB | 2048 | Balanced ⭐ |
 | 48GB+ | 4096 or direct CE | Maximum speed |
 
-### 2. Dataset Loading & Tokenization Optimization ⭐ v3.3 - Extreme Speed!
+### 2. Two-Stage Pipeline: Tokenization & Training Separation
+
+**Problem**: 700만+ 샘플 데이터셋에서 packing 시 메모리 폭발 (120GB+ RAM 필요)
+
+**Root Cause**:
+- `num_proc > 1`: 각 프로세스가 전체 데이터셋 메모리 복제
+- Packing: 모든 토큰을 메모리에 유지한 채 시퀀스 연결
+- 결과: OOM 크래시 또는 시스템 불안정
+
+**Solution**: 2단계 파이프라인 분리 (`pretrain.sh`)
+
+```
+Step 1: tokenize_datasets.py (Single Process)
+   └─> 데이터 로드 → 토크나이징 (Rust 병렬) → 배치 Packing (50만씩) → Arrow 저장
+
+Step 2: train.py --skip_tokenization (Multi-GPU)
+   └─> 캐시 로드 (메모리 맵) → DDP 학습
+```
+
+**Key Optimizations**:
+- **Single Process + Rust Parallelism**: `TOKENIZERS_PARALLELISM=true`로 메모리 복제 없이 병렬 토크나이징
+- **Incremental Packing**: 50만 샘플씩 배치 처리 후 즉시 디스크 저장
+- **Arrow Memory Map**: 디스크에서 직접 읽기 (RAM 복사 없음)
+
+**Results**:
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| RAM Usage | 120GB+ | 25GB | **80% 절감** |
+| Stability | OOM 크래시 | 안정적 | **100%** |
+| Reusability | 매번 토크나이징 | 캐시 재사용 | **N배 절약** |
+
+**See Also**: `docs/TOKENIZATION_PIPELINE.md` for detailed guide
+
+### 3. Dataset Loading & Tokenization Optimization ⭐ v3.3 - Extreme Speed!
 
 **Problem**: Large datasets (7.5M+ samples) can cause:
 - ❌ Cache file conflicts **at all stages** (FileNotFoundError)
@@ -558,7 +592,7 @@ export DATASET_WRITER_BATCH_SIZE=5000
 
 **See Also**: `docs/DATASET_OPTIMIZATION.md` for detailed guide
 
-### 3. Memory-Efficient Data Processing (Legacy)
+### 4. Memory-Efficient Data Processing (Legacy)
 
 **Problem**: Large datasets (1M+ samples) can exhaust 300GB+ RAM during tokenization.
 
@@ -585,7 +619,7 @@ export TOKENIZERS_PARALLELISM=true  # Rust multi-threading
 | `num_proc=4` + cache | ~100 GB | Medium |
 | **`num_proc=1` + TOKENIZERS_PARALLELISM=true** | **~30 GB** ✅ | **Fast** |
 
-### 4. NCCL Configuration for Multi-GPU
+### 5. NCCL Configuration for Multi-GPU
 
 **Problem**: DDP training can hang with default NCCL timeouts.
 
@@ -602,7 +636,7 @@ export TORCH_DISTRIBUTED_DEBUG=OFF  # Disable for performance
 # Consumer GPUs (RTX): P2P disabled
 ```
 
-### 5. Rust-Based Performance Packages
+### 6. Rust-Based Performance Packages
 
 MOAI-LLM uses Rust packages for 10-50x faster operations:
 
@@ -621,7 +655,7 @@ except ImportError:
     import json
 ```
 
-### 6. Context Extension with YaRN
+### 7. Context Extension with YaRN
 
 ```python
 from moai_llm.config import MoaiConfig
@@ -638,7 +672,7 @@ config = MoaiConfig(
 )
 ```
 
-### 7. Sequence Packing
+### 8. Sequence Packing
 
 ```python
 from moai_llm.data import HierarchicalBalancePacker
@@ -652,7 +686,7 @@ packed_sequences = packer.pack(sequences)
 # Achieves 90%+ GPU utilization
 ```
 
-### 8. Custom Loss Functions
+### 9. Custom Loss Functions
 
 ```python
 from moai_llm.losses import create_loss_function

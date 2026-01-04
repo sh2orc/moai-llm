@@ -112,7 +112,14 @@ from pathlib import Path as PathType
 # Check rank early
 rank = int(os.environ.get(ENV_RANK, 0))
 world_size = int(os.environ.get(ENV_WORLD_SIZE, 1))
+local_rank = int(os.environ.get(ENV_LOCAL_RANK, 0))
 is_main = (rank == 0)
+
+# Early CUDA device initialization to prevent race conditions
+# Must be done before any other CUDA operations (model loading, TrainingArguments, etc.)
+if world_size > 1:
+    import torch
+    torch.cuda.set_device(local_rank)
 
 # 동기화 마커 파일
 import_marker = PathType("/tmp/.moai_import_done")
