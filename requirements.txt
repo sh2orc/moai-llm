@@ -38,9 +38,16 @@ torchao>=0.11.0
 # Install with: pip install --no-build-isolation transformer_engine[pytorch]
 # transformer-engine>=2.9.0
 
+# Mamba SSM for linear-time sequence modeling
+# Install from source for best performance: pip install git+https://github.com/state-spaces/mamba.git
+mamba-ssm>=2.0.0
+
 # Flash Attention (requires CUDA and specific installation)
 # Install separately: pip install flash-attn --no-build-isolation
 # flash-attn>=2.7.0
+
+# causal-conv1d for optimized Mamba convolution
+causal-conv1d>=1.4.0
 
 # Development dependencies
 pytest>=9.0.0

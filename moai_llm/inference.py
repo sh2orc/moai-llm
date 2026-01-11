@@ -2,13 +2,16 @@
 Inference utilities for MOAI-LLM.
 
 Provides easy-to-use inference pipeline for text generation.
+Supports both legacy Transformer and new Mamba architectures.
 """
 
 import torch
 from typing import List, Optional, Union, Dict
 from transformers import AutoTokenizer, GenerationConfig
 
-from moai_llm.modeling.model import MoaiForCausalLM
+# Support both architectures
+from moai_llm.modeling.legacy_transformer.model import MoaiForCausalLM as MoaiTransformerForCausalLM
+from moai_llm.modeling.moai_mamba import MoaiForCausalLM as MoaiMambaForCausalLM
 
 
 class MoaiInferencePipeline:
@@ -16,15 +19,20 @@ class MoaiInferencePipeline:
     Inference pipeline for MOAI-LLM.
 
     Simple interface for text generation with pre-trained models.
+    Supports both legacy Transformer and Mamba architectures.
 
     Args:
         model_path: Path to pre-trained model checkpoint
         tokenizer_path: Path to tokenizer
         device: Device for computation ('cuda' or 'cpu')
         dtype: Data type for model weights (torch.float16, torch.bfloat16, torch.float32)
+        model_type: Model architecture ('mamba' for pure SSM, 'transformer' for legacy)
 
     Example:
-        >>> pipeline = MoaiInferencePipeline("outputs/moai-3b/final_model", "tokenizers/moai_tokenizer")
+        >>> # For Mamba models (recommended)
+        >>> pipeline = MoaiInferencePipeline("outputs/moai-mamba-2b", "tokenizers/moai_tokenizer", model_type="mamba")
+        >>> # For legacy Transformer models
+        >>> pipeline = MoaiInferencePipeline("outputs/moai-3b/final_model", "tokenizers/moai_tokenizer", model_type="transformer")
         >>> text = pipeline.generate("Once upon a time", max_new_tokens=100)
         >>> print(text)
     """
@@ -35,6 +43,7 @@ class MoaiInferencePipeline:
         tokenizer_path: str,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.bfloat16,
+        model_type: str = "mamba",
     ):
         # Auto-detect device
         if device is None:
@@ -42,17 +51,26 @@ class MoaiInferencePipeline:
 
         self.device = device
         self.dtype = dtype
+        self.model_type = model_type.lower()
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Load model
-        self.model = MoaiForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=dtype,
-        ).to(device)
+        # Load model based on architecture
+        if self.model_type == "mamba":
+            self.model = MoaiMambaForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=dtype,
+            ).to(device)
+        elif self.model_type == "transformer":
+            self.model = MoaiTransformerForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=dtype,
+            ).to(device)
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}. Use 'mamba' or 'transformer'")
 
         self.model.eval()
 
